@@ -1,0 +1,68 @@
+[importlinter]
+root_packages =
+    backend
+
+[importlinter:contract:backend-layers]
+name = Backend Layered Architecture
+type = layers
+layers =
+    backend.api
+    backend.services
+    backend.repositories
+    backend.models
+    backend.core
+
+[importlinter:contract:core-independence]
+name = Core Infrastructure Independence
+type = forbidden
+source_modules =
+    backend.core
+forbidden_modules =
+    backend.services
+    backend.repositories
+    backend.models
+    backend.api
+    backend.integrations
+    backend.policies
+
+[importlinter:contract:policies-independence]
+name = Pure Policy Independence
+type = forbidden
+source_modules =
+    backend.policies
+forbidden_modules =
+    backend.integrations
+    backend.services
+    backend.repositories
+    backend.models
+    backend.api
+
+[importlinter:contract:repositories-isolation]
+name = Repositories Isolation
+type = forbidden
+source_modules =
+    backend.repositories
+forbidden_modules =
+    backend.services
+    backend.api
+    backend.integrations
+
+[importlinter:contract:ai-integrations-isolation]
+name = AI Integrations Isolation
+type = forbidden
+source_modules =
+    backend.integrations.ai
+forbidden_modules =
+    backend.repositories
+    backend.services
+    backend.api
+
+[importlinter:contract:paypal-integrations-isolation]
+name = PayPal Integrations Isolation
+type = forbidden
+source_modules =
+    backend.integrations.paypal
+forbidden_modules =
+    backend.repositories
+    backend.services
+    backend.api

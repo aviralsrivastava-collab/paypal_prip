@@ -1,0 +1,57 @@
+# Secrets and local environment
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.cert
+*.crt
+*.p12
+*.pfx
+id_rsa
+id_rsa.pub
+id_ed25519
+id_ed25519.pub
+
+# Python
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Node / frontend
+node_modules/
+dist/
+build/
+.next/
+coverage/
+.coverage
+coverage.xml
+htmlcov/
+
+# Local databases, dumps and runtime artifacts
+*.sqlite
+*.sqlite3
+*.db
+*.log
+*.dump
+*.sql.dump
+*.bak
+.tmp/
+.cache/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Tool and audit caches
+.import_linter_cache/
+
+# Unpack artifacts and external documents
+PRIP_Harness_Engineering_Pack*/
+*.doc

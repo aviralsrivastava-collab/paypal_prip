@@ -1,0 +1,129 @@
+version: "3.8"
+
+networks:
+  prip-internal:
+    driver: bridge
+    internal: true
+  prip-public:
+    driver: bridge
+
+volumes:
+  prip-pgdata:
+    driver: local
+
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: prip-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-prip}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-prip_secure_password_replace_in_prod}
+      POSTGRES_DB: ${POSTGRES_DB:-prip_db}
+    volumes:
+      - prip-pgdata:/var/lib/postgresql/data
+    networks:
+      - prip-internal
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U prip -d prip_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  migration:
+    build:
+      context: ..
+      dockerfile: infra/Dockerfile.backend
+    container_name: prip-migration
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - prip-internal
+    environment:
+      DATABASE_URL: postgresql://prip:${POSTGRES_PASSWORD:-prip_secure_password_replace_in_prod}@db:5432/prip_db
+      APP_ENV: ${APP_ENV:-staging}
+      SESSION_SECRET: ${SESSION_SECRET:-prip_prod_secret_override_me}
+      PAYPAL_ENVIRONMENT: sandbox
+    command: ["alembic", "upgrade", "head"]
+    restart: "no"
+
+  backend:
+    build:
+      context: ..
+      dockerfile: infra/Dockerfile.backend
+    container_name: prip-backend
+    restart: unless-stopped
+    depends_on:
+      migration:
+        condition: service_completed_successfully
+      db:
+        condition: service_healthy
+    networks:
+      - prip-internal
+      - prip-public
+    environment:
+      DATABASE_URL: postgresql://prip:${POSTGRES_PASSWORD:-prip_secure_password_replace_in_prod}@db:5432/prip_db
+      APP_ENV: ${APP_ENV:-staging}
+      SESSION_SECRET: ${SESSION_SECRET:-prip_prod_secret_override_me}
+      OIDC_ISSUER: ${OIDC_ISSUER:-https://auth.prip.local}
+      OIDC_CLIENT_ID: ${OIDC_CLIENT_ID:-prip-api}
+      OIDC_JWT_SECRET: ${OIDC_JWT_SECRET:-prip-prod-oidc-secret-replace-in-production}
+      PAYPAL_CLIENT_TYPE: ${PAYPAL_CLIENT_TYPE:-mock}
+      PAYPAL_ENVIRONMENT: sandbox
+      PAYPAL_CLIENT_ID: ${PAYPAL_CLIENT_ID:-}
+      PAYPAL_CLIENT_SECRET: ${PAYPAL_CLIENT_SECRET:-}
+      PAYPAL_WEBHOOK_ID: ${PAYPAL_WEBHOOK_ID:-WH-MOCK-SANDBOX-001}
+      CONTROLLED_STOREFRONT_BASE_URL: ${CONTROLLED_STOREFRONT_BASE_URL:-http://frontend}
+    ports:
+      - "8000:8000"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8000/api/health/live || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  worker:
+    build:
+      context: ..
+      dockerfile: infra/Dockerfile.worker
+    container_name: prip-worker
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_healthy
+      db:
+        condition: service_healthy
+    networks:
+      - prip-internal
+    environment:
+      DATABASE_URL: postgresql://prip:${POSTGRES_PASSWORD:-prip_secure_password_replace_in_prod}@db:5432/prip_db
+      APP_ENV: ${APP_ENV:-staging}
+      SESSION_SECRET: ${SESSION_SECRET:-prip_prod_secret_override_me}
+      PAYPAL_CLIENT_TYPE: ${PAYPAL_CLIENT_TYPE:-mock}
+      PAYPAL_ENVIRONMENT: sandbox
+      PAYPAL_CLIENT_ID: ${PAYPAL_CLIENT_ID:-}
+      PAYPAL_CLIENT_SECRET: ${PAYPAL_CLIENT_SECRET:-}
+      WORKER_POLL_INTERVAL_SECONDS: 5.0
+      WORKER_BATCH_SIZE: 10
+      WORKER_LEASE_SECONDS: 60
+
+  frontend:
+    build:
+      context: ..
+      dockerfile: infra/Dockerfile.frontend
+    container_name: prip-frontend
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks:
+      - prip-public
+    ports:
+      - "80:80"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost/nginx-health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
