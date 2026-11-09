@@ -15,8 +15,19 @@ dependencies = [
     "pydantic-settings>=2.2.0,<3.0.0",
     "sqlalchemy>=2.0.28,<3.0.0",
     "alembic>=1.13.1,<2.0.0",
+    "httpx>=0.28.0",
+    "pyjwt[crypto]>=2.8.0",
     "python-dotenv>=1.0.0"
 ]
+
+[tool.setuptools]
+py-modules = ["worker"]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["api*", "core*", "models*", "schemas*", "policies*", "services*", "migrations*", "integrations*", "repositories*"]
+exclude = ["tests*"]
+namespaces = false
 
 [project.optional-dependencies]
 dev = [
