@@ -2,8 +2,9 @@
 
 **Date:** 2026-11-09  
 **Repository:** `https://github.com/aviralsrivastava-collab/paypal_prip`  
-**Failed Workflow Run:** [42506435800](https://github.com/aviralsrivastava-collab/paypal_prip/actions/runs/42506435800)  
-**Initial Failure Outcome:** `PARTIAL — SOME CI JOBS STILL FAIL` (2 failed, 1 passed)  
+**Initial Failed Workflow Run:** [42506435800](https://github.com/aviralsrivastava-collab/paypal_prip/actions/runs/42506435800)  
+**Final Verified Workflow Run:** [42565251645](https://github.com/aviralsrivastava-collab/paypal_prip/actions/runs/42565251645)  
+**Final Outcome:** **ALL CI JOBS PASS**
 
 ---
 
@@ -33,7 +34,7 @@ Logs were retrieved directly from the GitHub Actions API for failed run `4250643
 
 ### Job 2: Backend Lint, Types, Architecture & Tests
 - **Runner OS:** Ubuntu 24.04 LTS (`ubuntu-latest`)
-- **Failing Step:** Step 5 (`Backend Linting (Ruff)`)
+- **Failing Step 1:** Step 5 (`Backend Linting (Ruff)`)
 - **Command:** `ruff check backend`
 - **Failure Log Lines (315–354):**
   ```text
@@ -49,8 +50,15 @@ Logs were retrieved directly from the GitHub Actions API for failed run `4250643
   Process completed with exit code 1.
   ```
 - **Failing File & Line:** `backend/api/main.py:1:1`
-- **Root Cause:**
+- **Root Cause 1:**
   An extra blank line separated standard library imports `import uuid` and `from typing import Any` at the top of `backend/api/main.py`, violating Ruff's isort (`I001`) rule.
+
+- **Failing Step 2 (Uncovered in Pytest):** Step 8 (`Backend Unit & Integration Tests (Pytest)`)
+- **Command:** `pytest backend/tests -v`
+- **Failing File & Test:** `backend/tests/test_operational_resilience.py::TestOperationalResilience::test_21_database_migration_upgrade_and_downgrade_work`
+- **Root Cause 2:**
+  1. The test invoked `subprocess.run([".venv/Scripts/alembic.exe", ...])`, which does not exist on Linux CI runners.
+  2. On fresh CI checkouts without a pre-existing database, the database starts unmigrated at `base`. Calling `downgrade 006_payment_and_orders` on an unmigrated database caused Alembic to exit with code 255: `FAILED: Destination 006_payment_and_orders is not a valid downgrade target from current head(s)`.
 
 ### Job 3: Frontend Lint, Types, Architecture, Tests & Build
 - **Runner OS:** Ubuntu 24.04 LTS (`ubuntu-latest`)
@@ -66,10 +74,14 @@ Only verified root causes were modified:
 1. **`scripts/harness-check.ps1`:**
    - Added narrow exemptions for verified non-secret template and tooling files: `$exemptTrackedFiles = @('.env.example', 'scripts/secrets_scan.py')`.
    - Path normalization (`.Replace('\', '/')`) to ensure consistent matching across Windows and Linux path separators.
-   - Connected `scripts/secrets_scan.py` to run as an automated step in the harness integrity suite, verifying all 303 files for zero actual credentials.
+   - Connected `scripts/secrets_scan.py` to run as an automated step in the harness integrity suite, verifying all 304 files for zero actual credentials.
 
 2. **`backend/api/main.py`:**
    - Cleaned up the import block at lines 1–3 by removing the redundant blank line between `import uuid` and `from typing import Any`, satisfying Ruff's isort rules.
+
+3. **`backend/tests/test_operational_resilience.py`:**
+   - Replaced Windows-specific `.venv/Scripts/alembic.exe` with cross-platform `sys.executable, "-m", "alembic"`.
+   - Added `alembic upgrade head` prior to the downgrade step in `test_21_database_migration_upgrade_and_downgrade_work` to ensure clean runner environments initialize schema before exercising downgrade and re-upgrade.
 
 ---
 
@@ -77,7 +89,7 @@ Only verified root causes were modified:
 
 | Quality Gate | Exact Command | Exit Code | Result |
 | :--- | :--- | :--- | :--- |
-| **Harness & Secrets Scan** | `powershell.exe -ExecutionPolicy Bypass -File "scripts/harness-check.ps1"` | `0` | **PASS** (303 files scanned, 0 secrets) |
+| **Harness & Secrets Scan** | `powershell.exe -ExecutionPolicy Bypass -File "scripts/harness-check.ps1"` | `0` | **PASS** (304 files scanned, 0 secrets) |
 | **Backend Linting** | `ruff check backend` | `0` | **PASS** (All checks passed) |
 | **Backend Type Check** | `mypy backend` | `0` | **PASS** (129 source files checked) |
 | **Backend Architecture** | `lint-imports` | `0` | **PASS** (6 contracts kept, 0 broken) |
@@ -91,4 +103,22 @@ Only verified root causes were modified:
 
 ## 4. GitHub Actions Verification
 
-*(To be recorded following remote execution)*
+Remote execution was verified via GitHub Actions API:
+
+- **Run URL:** [https://github.com/aviralsrivastava-collab/paypal_prip/actions/runs/42565251645](https://github.com/aviralsrivastava-collab/paypal_prip/actions/runs/42565251645)
+- **Commit SHA:** `86de9dfb8676974d8c111127cac35fb3586ef1e2`
+- **Branch:** `main`
+
+### Job Results
+
+| Job Name | Runner OS | Status | Conclusion | Duration |
+| :--- | :--- | :--- | :--- | :--- |
+| **Harness & Secret Integrity Check** | `windows-latest` | `completed` | **`success`** | ~18s |
+| **Backend Lint, Types, Architecture & Tests** | `ubuntu-latest` | `completed` | **`success`** | ~24s |
+| **Frontend Lint, Types, Architecture, Tests & Build** | `ubuntu-latest` | `completed` | **`success`** | ~33s |
+
+---
+
+## 5. Final Verdict
+
+# `ALL CI JOBS PASS`
