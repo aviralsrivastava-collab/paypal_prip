@@ -18,7 +18,7 @@ def get_paypal_client(client_override: Optional[str] = None) -> PayPalClientInte
     if client_type == "mock":
         return MockPayPalClient()
 
-    if client_type == "sandbox":
+    if client_type in ("sandbox", "sdk"):
         if "sandbox" not in settings.paypal_base_url.lower():
             raise PayPalError(
                 f"Configuration safety violation: {settings.paypal_base_url} is not a valid Sandbox endpoint."
