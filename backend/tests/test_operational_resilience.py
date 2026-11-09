@@ -629,13 +629,18 @@ class TestOperationalResilience:
         """Scenario 21: Alembic migration upgrade to 007 and downgrade to 006 work without error."""
         import subprocess
         import sys
+
+        # Ensure database is upgraded to head first (required on clean CI runners where db starts at base)
+        p0 = subprocess.run([sys.executable, "-m", "alembic", "upgrade", "head"], capture_output=True, text=True)
+        assert p0.returncode == 0, f"Alembic upgrade to head failed: {p0.stderr}"
+
         # Downgrade to 006
         p1 = subprocess.run([sys.executable, "-m", "alembic", "downgrade", "006_payment_and_orders"], capture_output=True, text=True)
-        assert p1.returncode == 0
+        assert p1.returncode == 0, f"Alembic downgrade to 006 failed: {p1.stderr}"
 
-        # Upgrade to head (007)
+        # Upgrade back to head
         p2 = subprocess.run([sys.executable, "-m", "alembic", "upgrade", "head"], capture_output=True, text=True)
-        assert p2.returncode == 0
+        assert p2.returncode == 0, f"Alembic upgrade back to head failed: {p2.stderr}"
 
     def test_22_existing_phase_1_to_6_regression_tests_remain_passing(
         self, db_session: Session
