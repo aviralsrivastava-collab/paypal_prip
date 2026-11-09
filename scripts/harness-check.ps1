@@ -53,9 +53,15 @@ if (Get-Command git -ErrorAction SilentlyContinue) {
   }
 
   if ($isGitRepo) {
+    # Narrow exceptions for verified non-secret template and scanning tooling:
+    # - .env.example: Authorized environment template containing only non-secret placeholders
+    # - scripts/secrets_scan.py: Dedicated multi-pattern secret scanner utility
+    $exemptTrackedFiles = @('.env.example', 'scripts/secrets_scan.py')
     $tracked = git ls-files 2>$null
     foreach ($path in $tracked) {
-      if ($path -match '(^|/)(\.env($|\.)|.*(secret|credential|private.?key).*)') { $trackedEnv += $path }
+      $normalized = $path.Replace('\', '/')
+      if ($exemptTrackedFiles -contains $normalized) { continue }
+      if ($normalized -match '(^|/)(\.env($|\.)|.*(secret|credential|private.?key).*)') { $trackedEnv += $normalized }
     }
   } else {
     Write-Host 'Git repository not detected; skipping tracked-files secret scan.' -ForegroundColor Yellow
@@ -65,6 +71,19 @@ if ($trackedEnv.Count -gt 0) {
   Write-Host 'Review tracked paths that may contain secrets:' -ForegroundColor Red
   $trackedEnv | ForEach-Object { Write-Host " - $_" }
   exit 2
+}
+
+if (Test-Path (Join-Path $root 'scripts/secrets_scan.py')) {
+  Write-Host 'Running automated secrets scan...' -ForegroundColor Cyan
+  $pyCmd = 'python'
+  if (Test-Path (Join-Path $root '.venv/Scripts/python.exe')) {
+    $pyCmd = (Join-Path $root '.venv/Scripts/python.exe')
+  }
+  & $pyCmd (Join-Path $root 'scripts/secrets_scan.py')
+  if ($LASTEXITCODE -ne 0) {
+    Write-Host 'Automated secrets scan FAILED.' -ForegroundColor Red
+    exit 1
+  }
 }
 
 Write-Host 'Harness structure check passed. This does NOT run application tests or prove security.' -ForegroundColor Green
