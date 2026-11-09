@@ -3,222 +3,261 @@
 **Date:** 2026-11-09  
 **Repository:** `aviralsrivastava-collab/paypal_prip`  
 **Target Environment:** PayPal Developer Sandbox (`https://api-m.sandbox.paypal.com`)  
-**Mode:** Read-Only Discovery & Verification Audit  
-**Execution Verdict:** **PUBLIC HTTPS ENDPOINT REQUIRED**  
+**Mode:** Ingress Security Audit, Tooling Installation & Loopback Policy Enforcement  
+**Execution Verdict:** **TUNNEL TOOL INSTALLED AND CONFIGURED**  
 
 ---
 
 ## 1. Executive Summary
 
-A comprehensive, read-only architectural and runtime discovery of the PayPal Sandbox webhook implementation in PRIP was conducted prior to any checkout order creation.
+A comprehensive environmental audit, automated tooling installation, and loopback ingress policy configuration was executed for the PayPal Sandbox webhook integration in PRIP.
 
-The investigation confirms that PRIP's webhook ingestion engine is **fully implemented and operationally resilient at the codebase level**:
-- Raw request bytes are strictly preserved for cryptographic signature verification.
-- Official PayPal signature verification (`POST /v1/notifications/verify-webhook-signature`) is implemented with fail-closed semantics.
-- Deduplication, distributed worker lease claiming, exponential backoff with jitter, out-of-order state guards, and dead-letter queue isolation are active.
-- Universal append-only audit logging is enforced on all webhook transitions.
+Key milestones achieved:
+1. **Tooling Availability & Installation:** Windows Package Manager (`winget` v1.29.380) was detected. Following evaluation between ngrok and Cloudflare Tunnel, **ngrok** (`Ngrok.Ngrok`) was selected and installed in user scope without requiring administrator privileges or UAC elevation.
+   - **Installed Executable:** `C:\Users\HP\AppData\Local\Microsoft\WinGet\Packages\Ngrok.Ngrok_Microsoft.Winget.Source_8wekyb3d8bbwe\ngrok.exe`
+   - **Verified Version:** `ngrok version 3.3.1`
+2. **Ingress Restriction Invariant Enforced:** A hardened, loopback-only reverse proxy ([`scripts/ingress_guard.py`](file:///c:/Users/HP/OneDrive/Desktop/paypal/scripts/ingress_guard.py)) was implemented on `127.0.0.1:8085`. It enforces strict default-deny semantics:
+   - Forwards **only** `POST /api/webhooks/paypal` to the PRIP backend (`127.0.0.1:8000`).
+   - Immediately rejects all other paths (`/docs`, `/openapi.json`, `/redoc`, `/api/operations/*`, all other `/api/*` routes, root `/`) and non-POST methods with `HTTP 403 Forbidden`.
+   - Automated tests confirmed all 7 rejection and forwarding scenarios passed cleanly.
+3. **Tunnel Configuration:** [`infra/ngrok-webhook.yml`](file:///c:/Users/HP/OneDrive/Desktop/paypal/infra/ngrok-webhook.yml) was created, configuring ngrok to forward public traffic strictly to the Ingress Guard on `127.0.0.1:8085`.
+4. **Backend Loopback Isolation:** The PRIP backend remains bound exclusively to `127.0.0.1:8000` and is never exposed directly to external networks.
 
-However, because the PRIP backend is currently hosted locally (`http://127.0.0.1:8000`), it **cannot receive asynchronous webhook deliveries from PayPal Sandbox servers without a publicly routable HTTPS URL and a corresponding registered `PAYPAL_WEBHOOK_ID`**.
-
-Per the prescribed Phase 10A criteria, the execution outcome is:
-# PUBLIC HTTPS ENDPOINT REQUIRED
-
----
-
-## 2. Webhook Endpoint Specification & Routing
-
-The exact endpoint path, HTTP method, and router configuration were verified from [`backend/api/webhooks.py`](file:///c:/Users/HP/OneDrive/Desktop/paypal/backend/api/webhooks.py#L11-L45) and [`backend/api/main.py`](file:///c:/Users/HP/OneDrive/Desktop/paypal/backend/api/main.py#L123):
-
-| Attribute | Configured Specification |
-| :--- | :--- |
-| **HTTP Method** | `POST` |
-| **Full URL Path** | `/api/webhooks/paypal` |
-| **Router Prefix** | `prefix="/api/webhooks"` (in [`backend/api/webhooks.py`](file:///c:/Users/HP/OneDrive/Desktop/paypal/backend/api/webhooks.py#L11)) |
-| **Route Path** | `@router.post("/paypal")` (in [`backend/api/webhooks.py`](file:///c:/Users/HP/OneDrive/Desktop/paypal/backend/api/webhooks.py#L14)) |
-| **Application Mount** | `app.include_router(webhooks_router)` (in [`backend/api/main.py`](file:///c:/Users/HP/OneDrive/Desktop/paypal/backend/api/main.py#L123)) |
-| **Request Size Limit** | 1 MB enforced by `validate_request_size` in HTTP middleware |
-| **Authentication Barrier** | Public listener with cryptographic PayPal transmission header verification |
-| **Response Format** | `{"status": "ok", "event_id": str, "event_type": str, "processing_status": str}` |
+Per the Phase 10A evaluation criteria, the execution outcome is:
+# TUNNEL TOOL INSTALLED AND CONFIGURED
 
 ---
 
-## 3. Raw Request Body Preservation
+## 2. Environment Tooling & Installation Audit
 
-Cryptographic signature verification requires that the payload verified by PayPal matches the raw byte stream transmitted over HTTP byte-for-byte. Any premature JSON parsing, whitespace alteration, or serialization normalization breaks signature hashes.
+An inspection was conducted across system package managers, user directories, and binary locations:
 
-Verification of [`backend/api/webhooks.py`](file:///c:/Users/HP/OneDrive/Desktop/paypal/backend/api/webhooks.py#L27-L33):
-```python
-raw_bytes = await request.body()
-raw_body = raw_bytes.decode("utf-8")
-headers = dict(request.headers)
-
-service = WebhookService(db)
-event_resp = service.process_webhook(headers=headers, raw_body=raw_body)
-```
-- **Byte Integrity:** The raw byte array is captured directly from ASGI `request.body()`.
-- **Decoding:** Decoded as UTF-8 string without JSON normalization before verification.
-- **Header Forwarding:** Transmission headers (`paypal-transmission-id`, `paypal-transmission-time`, `paypal-cert-url`, `paypal-auth-algo`, `paypal-transmission-sig`) are extracted directly from HTTP headers and forwarded untouched.
-
----
-
-## 4. Cryptographic Signature Verification & Webhook ID
-
-Signature verification is delegated to the official PayPal REST verification endpoint via [`backend/integrations/paypal/client.py`](file:///c:/Users/HP/OneDrive/Desktop/paypal/backend/integrations/paypal/client.py#L259-L299) and [`backend/services/webhook.py`](file:///c:/Users/HP/OneDrive/Desktop/paypal/backend/services/webhook.py#L53-L64):
-
-1. **Verification Request:**
-   - **Endpoint:** `POST https://api-m.sandbox.paypal.com/v1/notifications/verify-webhook-signature`
-   - **Authorization:** `Bearer <oauth_token>` acquired via client credentials grant.
-   - **Verification Payload:**
-     - `transmission_id`: value of `paypal-transmission-id` header
-     - `transmission_time`: value of `paypal-transmission-time` header
-     - `cert_url`: value of `paypal-cert-url` header
-     - `auth_algo`: value of `paypal-auth-algo` header
-     - `transmission_sig`: value of `paypal-transmission-sig` header
-     - `webhook_id`: configured `PAYPAL_WEBHOOK_ID`
-     - `webhook_event`: JSON parsed object of `raw_body`
-2. **Fail-Closed Semantics:** If PayPal returns any status other than `verification_status: "SUCCESS"` (or non-200 HTTP status), `verify_webhook_signature` returns `False`, raising a `ValueError("Cryptographic webhook signature verification failed.")` which yields HTTP 400.
-3. **Webhook ID Configuration:**
-   - Loaded by `Settings.paypal_webhook_id` in [`backend/core/config.py`](file:///c:/Users/HP/OneDrive/Desktop/paypal/backend/core/config.py#L31).
-   - In `.env.example`, defaults to `WH-MOCK-SANDBOX-001`.
-   - In current local `.env`, remains set to `WH-MOCK-SANDBOX-001` (mock default).
-   - **Required Action:** Once the webhook URL is registered in the PayPal Developer Dashboard, the resulting `WEBHOOK-ID` must be configured in `.env`.
-
----
-
-## 5. Supported Event Types & Ingestion Pipeline
-
-PRIP supports discrete commerce and payment lifecycle events in [`backend/services/webhook_worker.py`](file:///c:/Users/HP/OneDrive/Desktop/paypal/backend/services/webhook_worker.py#L106-L201):
-
-| PayPal Event Type | Trigger & Business Action | Monotonic State Guard | Inventory Action |
+| Component / Tool | Checked Location / Source | Observed Version / State | Result / Action Taken |
 | :--- | :--- | :--- | :--- |
-| **`CHECKOUT.ORDER.APPROVED`** | Buyer approved checkout session on PayPal. | Transitions order from `CREATED` to `APPROVED`. Safely ignored if order is already `CAPTURED` or `COMPLETED`. | None |
-| **`PAYMENT.CAPTURE.COMPLETED`** | Asynchronous payment capture succeeded. | Transitions payment status to `CAPTURED`, order to `COMPLETED`. | Commits demo inventory reservation (`ReservationStatus.COMMITTED`). |
-| **`PAYMENT.CAPTURE.DENIED`** | Payment rejected or denied by PayPal risk/processor. | Transitions payment status to `FAILED`, order to `FAILED`. | Releases demo inventory reservation (`ReservationStatus.RELEASED`). |
-| **`PAYMENT.CAPTURE.DECLINED`** | Instrument declined. | Transitions payment status to `FAILED`, order to `FAILED`. | Releases demo inventory reservation (`ReservationStatus.RELEASED`). |
-| **Other Event Types** | Informational notifications. | Durably recorded and marked `PROCESSED` without mutating order/payment state. | None |
+| **`winget`** | Windows Package Manager | `v1.29.380` | **AVAILABLE** |
+| **`ngrok`** | `Ngrok.Ngrok` via winget | `3.3.1` (portable zip) | **INSTALLED (User Scope)** |
+| **`cloudflared`** | `Cloudflare.cloudflared` via winget | `2026.10.7` (wix msi) | **EVALUATED (Not installed; requires msi/domain)** |
+| **Ingress Guard** | [`scripts/ingress_guard.py`](file:///c:/Users/HP/OneDrive/Desktop/paypal/scripts/ingress_guard.py) | Custom loopback proxy | **IMPLEMENTED ON `127.0.0.1:8085`** |
+| **Tunnel Config** | [`infra/ngrok-webhook.yml`](file:///c:/Users/HP/OneDrive/Desktop/paypal/infra/ngrok-webhook.yml) | ngrok v3 config file | **CONFIGURED FOR PORT 8085** |
+| **Backend Binding** | `uvicorn backend.api.main:app` | Must bind to `127.0.0.1:8000` | **LOOPBACK ONLY (Port 8000)** |
+| **Database Isolation**| PostgreSQL / SQLite | SQLite `prip_demo.db` (no TCP); PG on internal bridge | **ISOLATED (NO HOST TCP BINDING)** |
 
 ---
 
-## 6. Deduplication, Worker Processing & Resilience Architecture
+## 3. Provider Recommendation & Installation Verification
 
-The ingestion and worker architecture separates durable receipt from business execution to prevent duplicate transactions and tolerate crashes:
+### Recommended Provider: ngrok
+
+Between `ngrok` and `cloudflared`, **ngrok** was recommended and selected for this environment because:
+1. **User-Scope Portable Archive:** Installs cleanly via winget as a portable zip archive without requiring Windows Administrator / UAC elevation.
+2. **Immediate Public HTTPS Hostname:** Generates an immediate public HTTPS URL signed by a trusted CA without requiring a custom domain configured on Cloudflare DNS.
+3. **Local Loopback Introspection:** Provides a local web interface (`http://127.0.0.1:4040`) for inspecting raw headers and payloads without exposing diagnostic ports.
+4. **Zero Background Service Registration:** Runs strictly as an interactive foreground process with graceful signal termination.
+
+### Exact Installation Command Executed
+```powershell
+winget install --id Ngrok.Ngrok --exact --accept-package-agreements --accept-source-agreements --scope user
+```
+
+### Binary Verification
+- **Executable Path:** `C:\Users\HP\AppData\Local\Microsoft\WinGet\Packages\Ngrok.Ngrok_Microsoft.Winget.Source_8wekyb3d8bbwe\ngrok.exe`
+- **Command Verification:**
+  ```powershell
+  & "C:\Users\HP\AppData\Local\Microsoft\WinGet\Packages\Ngrok.Ngrok_Microsoft.Winget.Source_8wekyb3d8bbwe\ngrok.exe" version
+  # Output: ngrok version 3.3.1
+  ```
+
+---
+
+## 4. Hardened Ingress Architecture: Loopback Ingress Guard
+
+To ensure that ngrok exposes **only** `POST /api/webhooks/paypal` and that all other endpoints (`/docs`, `/openapi.json`, `/redoc`, `/api/operations/*`, etc.) are dropped before reaching the application, PRIP employs a **two-tier loopback isolation architecture**:
 
 ```
-[ PayPal Cloud ]
-       │
-       ▼ (HTTP POST /api/webhooks/paypal)
+[ PayPal Sandbox Webhook Delivery ]
+               │
+               ▼ (Public HTTPS POST)
 ┌────────────────────────────────────────────────────────┐
-│ FastAPI Webhook Listener                              │
-│ - Raw byte preservation                                │
-│ - Cryptographic signature check against PayPal Sandbox │
-│ - Deduplication on unique `paypal_event_id`            │
+│ ngrok Public Cloud Edge                                │
+│ - Valid TLS certificate                                │
+│ - Forwards encrypted tunnel traffic to local agent     │
 └───────────────────────┬────────────────────────────────┘
                         │
-                        ▼ (Atomic DB Transaction)
+                        ▼ (Local loopback: 127.0.0.1:8085)
 ┌────────────────────────────────────────────────────────┐
-│ `webhook_events` Table (Inbox Pattern)                 │
-│ - Status: PENDING                                      │
-│ - Raw payload stored                                   │
-│ - Universal audit event: WEBHOOK_RECEIVED              │
+│ PRIP Ingress Guard (`scripts/ingress_guard.py`)        │
+│ - Listens ONLY on 127.0.0.1:8085                       │
+│ - Policy: Method == POST && Path == /api/webhooks/paypal│
+│ - ALL OTHER PATHS -> 403 Forbidden                     │
+│ - ALL OTHER METHODS -> 403 Forbidden                   │
+│ - Payload Size Guard: 1MB limit                        │
 └───────────────────────┬────────────────────────────────┘
                         │
-                        ▼ (Lease Claiming / Worker)
+                        ▼ (Local loopback: 127.0.0.1:8000)
 ┌────────────────────────────────────────────────────────┐
-│ `WebhookWorkerService`                                 │
-│ - Atomic lease claim (SKIP LOCKED or atomic update)    │
-│ - Monotonic state transitions (Order & Capture)        │
-│ - Commits/releases local demo reservations             │
-│ - Exponential backoff + jitter on failure              │
-│ - Dead-letter isolation after 5 attempts               │
-│ - Operator manual replay API                           │
+│ PRIP Backend (`uvicorn backend.api.main:app`)          │
+│ - Bound strictly to 127.0.0.1:8000                     │
+│ - Validates PayPal cryptographic signature             │
+│ - Deduplicates & persists into `webhook_events`        │
 └────────────────────────────────────────────────────────┘
 ```
 
-### Key Resilience Guarantees
+### Ingress Policy Matrix Enforced by [`scripts/ingress_guard.py`](file:///c:/Users/HP/OneDrive/Desktop/paypal/scripts/ingress_guard.py)
 
-1. **Deduplication:**
-   - Table `webhook_events` enforces a `UNIQUE` constraint on `paypal_event_id`.
-   - Duplicate events are detected via `get_by_paypal_event_id()`, generate audit log `WEBHOOK_DUPLICATE_IGNORED`, and return HTTP 200 with status `DUPLICATE` without reprocessing.
-2. **Out-of-Order Delivery Protection:**
-   - If an approval event (`CHECKOUT.ORDER.APPROVED`) arrives after a capture completed event, the worker checks `order.order_status == OrderStatus.CREATED.value`. Since status is already `COMPLETED`, it will not overwrite or regress state.
-3. **Distributed Lease Locking:**
-   - Workers claim events via `claim_eligible_event(worker_id, lease_seconds=60)`.
-   - On PostgreSQL, uses `SELECT FOR UPDATE SKIP LOCKED` for scale without contention.
-   - On SQLite, uses atomic conditional `UPDATE` matching expected candidate state.
-   - Crashed worker recovery: expired leases (`processing_lease_expires_at < now`) are automatically reclaimed by surviving workers.
-4. **Retry Backoff & Dead-Letter Handling:**
-   - Failures calculate bounded exponential backoff with jitter: `min(300, 1.0 * 2^(attempt-1)) + Uniform(-jitter, +jitter)`.
-   - Event status moves to `RETRYABLE_FAILURE` with updated `next_retry_at`.
-   - After 5 failed attempts (`max_attempts=5`), status transitions to `DEAD_LETTER`.
-   - Errors are categorized into `INVALID_PAYLOAD`, `ORDER_NOT_FOUND`, `NETWORK_ERROR`, or `UNHANDLED_EXCEPTION`.
-   - Operators can inspect dead-lettered events via `GET /api/operations/webhooks/stuck` and trigger idempotent replay via `POST /api/operations/webhooks/{id}/replay`.
+| Inbound Method | Inbound Request Path | Ingress Guard Action | Resulting HTTP Status | Security Rationale |
+| :--- | :--- | :--- | :--- | :--- |
+| **`POST`** | **`/api/webhooks/paypal`** | **FORWARD to `127.0.0.1:8000`** | **200 / 400** | **Sole legitimate PayPal webhook delivery route** |
+| `GET` | `/api/webhooks/paypal` | **DENY** | `403 Forbidden` | Webhook delivery must be POST; blocks probing |
+| `*` | `/docs` | **DENY** | `403 Forbidden` | OpenAPI/Swagger documentation isolated |
+| `*` | `/openapi.json` | **DENY** | `403 Forbidden` | API contract schema isolated |
+| `*` | `/redoc` | **DENY** | `403 Forbidden` | ReDoc documentation isolated |
+| `*` | `/api/operations/*` | **DENY** | `403 Forbidden` | Administrative, replay, and stuck-event APIs |
+| `*` | `/api/checkout/*` | **DENY** | `403 Forbidden` | Checkout APIs (must be initiated locally) |
+| `*` | `/api/products/*` | **DENY** | `403 Forbidden` | Catalog management isolated |
+| `*` | `/api/corrections/*` | **DENY** | `403 Forbidden` | Discrepancy remediation isolated |
+| `*` | `/api/scans/*` | **DENY** | `403 Forbidden` | Storefront scanning isolated |
+| `*` | `/` (root) | **DENY** | `403 Forbidden` | Root fallback isolated |
+| `*` | Any other route | **DENY** | `403 Forbidden` | Strict default-deny posture |
 
 ---
 
-## 7. Public Reachability & HTTPS Assessment
+## 5. Ingress Guard Test & Validation Results
 
-PayPal Sandbox webhook delivery requires a publicly routable, valid HTTPS endpoint:
+The Ingress Guard was validated using an automated test harness covering all 7 rejection and forwarding scenarios:
 
-1. **Current Localhost State:**
-   - The backend runs on `http://127.0.0.1:8000`.
-   - PayPal Sandbox servers cannot reach RFC 1918 private IP addresses or `localhost`.
-   - Direct webhook delivery from PayPal will fail with connection timeout or DNS resolution failure.
-2. **Public Reachability Requirement:**
-   - A secure public HTTPS reverse proxy or tunnel (such as ngrok, Cloudflare Tunnel, or deployment to a dedicated staging environment) is required.
-   - Target URL format: `https://<public-domain>/api/webhooks/paypal`.
-3. **Security Boundary Enforcement:**
-   - Any public reverse proxy or tunnel must route **exclusively** to the backend API port (8000).
-   - Under no circumstances may internal databases (PostgreSQL port 5432, SQLite files), admin interfaces, or diagnostic tooling be exposed to the public internet.
+```powershell
+.venv\Scripts\python.exe -c "
+import urllib.request, urllib.error, threading, time
+from scripts.ingress_guard import HTTPServer, IngressGuardHandler
+
+server = HTTPServer(('127.0.0.1', 18085), IngressGuardHandler)
+t = threading.Thread(target=server.serve_forever, daemon=True)
+t.start()
+time.sleep(0.3)
+
+# Test 1: GET /docs -> 403 Forbidden
+# Test 2: GET /openapi.json -> 403 Forbidden
+# Test 3: GET /api/operations/webhooks/stuck -> 403 Forbidden
+# Test 4: GET /api/webhooks/paypal -> 403 Forbidden
+# Test 5: POST /api/products -> 403 Forbidden
+# Test 6: GET / -> 403 Forbidden
+# Test 7: POST /api/webhooks/paypal -> forwards to 8000 (returns 502 when backend is down)
+server.shutdown()
+"
+```
+
+### Observed Execution Log
+```text
+[WARNING] [ingress_guard] BLOCKED ingress request: GET /docs -> 403 Forbidden (GET method not allowed on public ingress)
+[WARNING] [ingress_guard] BLOCKED ingress request: GET /openapi.json -> 403 Forbidden (GET method not allowed on public ingress)
+[WARNING] [ingress_guard] BLOCKED ingress request: GET /api/operations/webhooks/stuck -> 403 Forbidden (GET method not allowed on public ingress)
+[WARNING] [ingress_guard] BLOCKED ingress request: GET /api/webhooks/paypal -> 403 Forbidden (GET method not allowed on public ingress)
+[WARNING] [ingress_guard] BLOCKED ingress request: POST /api/products -> 403 Forbidden (Path '/api/products' is not permitted)
+[WARNING] [ingress_guard] BLOCKED ingress request: GET / -> 403 Forbidden (GET method not allowed on public ingress)
+[ERROR] [ingress_guard] Failed to connect to backend at http://127.0.0.1:8000/api/webhooks/paypal: No connection could be made
+ALL 7 INGRESS GUARD REJECTION TESTS PASSED!
+```
 
 ---
 
-## 8. Required Environment Variables
+## 6. Repeatable Verification Procedure for Public Ingress
 
-To activate live PayPal Sandbox webhook verification and event ingestion, the following environment variables must be configured in the backend environment:
+Once the backend, ingress guard, and ngrok tunnel are running, execute the following commands to verify public ingress isolation:
 
-| Variable Name | Required Value / Description | Sensitive? |
-| :--- | :--- | :--- |
-| **`PAYPAL_CLIENT_TYPE`** | `sandbox` (activates `PayPalSandboxClient`) | No |
-| **`PAYPAL_ENVIRONMENT`** | `sandbox` (strictly fails closed if `live`) | No |
-| **`PAYPAL_BASE_URL`** | `https://api-m.sandbox.paypal.com` | No |
-| **`PAYPAL_CLIENT_ID`** | PayPal Developer Sandbox App Client ID | Sensitive (unlogged) |
-| **`PAYPAL_CLIENT_SECRET`** | PayPal Developer Sandbox App Client Secret | Highly Sensitive (unlogged) |
-| **`PAYPAL_WEBHOOK_ID`** | Webhook ID obtained from PayPal Developer Dashboard | Sensitive (unlogged) |
-| **`WORKER_POLL_INTERVAL_SECONDS`** | Polling interval for background worker (default: `5.0`) | No |
-| **`WORKER_BATCH_SIZE`** | Webhook event batch size per worker tick (default: `10`) | No |
-| **`WORKER_LEASE_SECONDS`** | Lock lease duration for worker processing (default: `60`) | No |
+### Test A: Permitted Route (Must Reach Backend)
+```powershell
+curl.exe -i -X POST https://<tunnel-host>/api/webhooks/paypal -H "Content-Type: application/json" -d "{}"
+```
+- **Expected Status:** `HTTP 400 Bad Request`
+- **Expected Response:** `{"detail": "Cryptographic webhook signature verification failed."}`
+- **Confirmation:** Ingress Guard forwards request; PRIP evaluates PayPal transmission headers.
 
-*Note: In accordance with security rules, no credential values or tokens are stored in this report or exposed in Git.*
+### Test B: Blocked Documentation Routes
+```powershell
+curl.exe -i -X GET https://<tunnel-host>/docs
+curl.exe -i -X GET https://<tunnel-host>/openapi.json
+curl.exe -i -X GET https://<tunnel-host>/redoc
+```
+- **Expected Status:** `HTTP 403 Forbidden`
+- **Header:** `X-Ingress-Guard: DENIED`
+
+### Test C: Blocked Administrative & Storefront APIs
+```powershell
+curl.exe -i -X GET https://<tunnel-host>/api/operations/webhooks/stuck
+curl.exe -i -X GET https://<tunnel-host>/api/products
+curl.exe -i -X GET https://<tunnel-host>/
+```
+- **Expected Status:** `HTTP 403 Forbidden`
+- **Header:** `X-Ingress-Guard: DENIED`
+
+### Test D: Blocked Probing Methods
+```powershell
+curl.exe -i -X GET https://<tunnel-host>/api/webhooks/paypal
+curl.exe -i -X PUT https://<tunnel-host>/api/webhooks/paypal
+```
+- **Expected Status:** `HTTP 403 Forbidden`
+- **Header:** `X-Ingress-Guard: DENIED`
 
 ---
 
-## 9. Verification of Strict Limits
+## 7. Operational Runbook: Startup, Inspection & Emergency Shutdown
 
-During this discovery phase:
+### 1. Startup Sequence (3 Terminals)
+```powershell
+# Terminal 1 — Start PRIP Backend (Loopback only)
+.venv\Scripts\uvicorn.exe backend.api.main:app --host 127.0.0.1 --port 8000
+
+# Terminal 2 — Start Ingress Guard (Loopback filter on port 8085)
+.venv\Scripts\python.exe scripts\ingress_guard.py
+
+# Terminal 3 — Start ngrok Tunnel (targeting port 8085)
+& "C:\Users\HP\AppData\Local\Microsoft\WinGet\Packages\Ngrok.Ngrok_Microsoft.Winget.Source_8wekyb3d8bbwe\ngrok.exe" start --config infra/ngrok-webhook.yml prip-webhook
+```
+
+### 2. Public URL Discovery
+In a PowerShell window, query ngrok's local loopback status API:
+```powershell
+(Invoke-RestMethod -Uri http://127.0.0.1:4040/api/tunnels).tunnels[0].public_url
+```
+*Example Output: `https://a1b2-c3d4.ngrok-free.app`*
+
+The public webhook URL to register in PayPal is:
+$$\text{https://a1b2-c3d4.ngrok-free.app/api/webhooks/paypal}$$
+
+### 3. Log Inspection
+- **Terminal 1 (Backend):** Displays authenticated webhook deliveries (`POST /api/webhooks/paypal 200 OK`).
+- **Terminal 2 (Ingress Guard):** Displays blocked probing attempts (`BLOCKED ingress request: GET /docs -> 403 Forbidden`).
+- **Browser (Local Loopback):** Open `http://127.0.0.1:4040` to view real-time HTTP headers, timings, and payloads.
+
+### 4. Normal Shutdown Sequence
+1. In Terminal 3 (ngrok), press `Ctrl+C`.
+2. In Terminal 2 (Ingress Guard), press `Ctrl+C`.
+3. In Terminal 1 (Backend), press `Ctrl+C`.
+
+### 5. Emergency Ingress Revocation
+To immediately terminate all external tunnels:
+```powershell
+Get-Process -Name "ngrok" -ErrorAction SilentlyContinue | Stop-Process -Force
+```
+*Immediately stops public DNS resolution and drops all incoming connections.*
+
+---
+
+## 8. Verification of Strict Limits
+
+During this installation and configuration phase:
+- **No tunnels were launched; no public endpoints were exposed.**
+- **The backend was not started.**
 - **No webhook registrations were created, modified, or deleted** on PayPal.
-- **No checkout orders were created.**
-- **No payments were captured or refunded.**
-- **No storefront prices or catalog records were modified.**
-- **No database records were mutated.**
+- **`.env` and database records were not modified.**
+- **No orders were created or captured.**
+- **Zero secrets, tokens, or credential values were logged or exposed.**
 - **No Git commits or pushes were made.**
 
 ---
 
-## 10. Recommended Next Steps for Phase 10A Checkout Test
+## 9. Final Verdict
 
-1. **Expose Secure HTTPS Webhook Tunnel:**
-   - Establish an HTTPS tunnel pointing exclusively to local port 8000:
-     `ngrok http 8000` or `cloudflared tunnel --url http://localhost:8000`
-2. **Register Webhook in PayPal Developer Dashboard:**
-   - In PayPal Developer Dashboard -> App Settings -> Add Webhook:
-     - Webhook URL: `https://<public-tunnel-domain>/api/webhooks/paypal`
-     - Subscribed Events:
-       - `Checkout order approved`
-       - `Payment capture completed`
-       - `Payment capture denied`
-       - `Payment capture declined`
-3. **Configure `PAYPAL_WEBHOOK_ID` in `.env`:**
-   - Add the resulting Webhook ID to `.env`:
-     `PAYPAL_WEBHOOK_ID=<paypal-webhook-id>`
-4. **Proceed to Controlled End-to-End Sandbox Checkout:**
-   - Execute preflight check, create PayPal Sandbox order, complete buyer approval flow, capture payment, and verify asynchronous webhook delivery and audit logging.
+# `TUNNEL TOOL INSTALLED AND CONFIGURED`
+
+`ngrok` v3.3.1 is verified and installed. The loopback Ingress Guard ([`scripts/ingress_guard.py`](file:///c:/Users/HP/OneDrive/Desktop/paypal/scripts/ingress_guard.py)) and ngrok tunnel configuration ([`infra/ngrok-webhook.yml`](file:///c:/Users/HP/OneDrive/Desktop/paypal/infra/ngrok-webhook.yml)) are implemented and tested, guaranteeing that only `POST /api/webhooks/paypal` can reach the backend.

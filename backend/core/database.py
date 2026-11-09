@@ -38,11 +38,12 @@ def init_db_engine(database_url: Optional[str] = None) -> Engine:
     In production: fails closed immediately without fallback.
     In non-production: falls back to SQLite for local development convenience.
     """
-    target_url = database_url or settings.database_url
+    current_settings = get_settings()
+    target_url = database_url or current_settings.database_url
     try:
         return create_app_engine(target_url)
     except Exception as exc:
-        if settings.app_env.lower() == "production":
+        if current_settings.app_env.lower() == "production":
             raise RuntimeError(
                 f"Production database connection failed: {exc}. Engine fails closed without fallback."
             ) from exc

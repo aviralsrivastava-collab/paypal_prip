@@ -114,8 +114,10 @@ def scan_directory(root_dir: Path) -> int:
 
         for file in files:
             file_path = Path(root) / file
-            # Skip binary doc uploads and sqlite DBs
+            # Skip binary doc uploads, sqlite DBs, and local git-ignored env files (.env is checked for untracked status by harness-check)
             if file.endswith((".sqlite", ".db", ".doc", ".png", ".jpg", ".ico", ".pdf", ".zip", ".tar.gz", ".gz")):
+                continue
+            if file == ".env" or (file.startswith(".env.") and not file.endswith(".example")):
                 continue
 
             findings = scan_file(file_path)

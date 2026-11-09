@@ -52,6 +52,12 @@ Thumbs.db
 # Tool and audit caches
 .import_linter_cache/
 
+# Local credentials, tunnels, and editor tooling
+mcp_config*.json
+.ngrok*
+cloudflared/
+*.token
+
 # Unpack artifacts and external documents
 PRIP_Harness_Engineering_Pack*/
 *.doc

@@ -49,3 +49,13 @@ def reset_rate_limits() -> Generator[None, None, None]:
     reset_rate_limit_store()
     yield
     reset_rate_limit_store()
+
+
+@pytest.fixture(autouse=True)
+def enforce_mock_paypal_for_unit_tests(monkeypatch: pytest.MonkeyPatch) -> Generator[None, None, None]:
+    """Ensures unit test suites use deterministic mock PayPal client regardless of local .env configuration."""
+    monkeypatch.setenv("PAYPAL_CLIENT_TYPE", "mock")
+    from backend.core.config import get_settings
+    get_settings.cache_clear()
+    yield
+    get_settings.cache_clear()
