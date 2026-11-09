@@ -628,12 +628,13 @@ class TestOperationalResilience:
     def test_21_database_migration_upgrade_and_downgrade_work(self) -> None:
         """Scenario 21: Alembic migration upgrade to 007 and downgrade to 006 work without error."""
         import subprocess
+        import sys
         # Downgrade to 006
-        p1 = subprocess.run([".venv/Scripts/alembic.exe", "downgrade", "006_payment_and_orders"], capture_output=True, text=True)
+        p1 = subprocess.run([sys.executable, "-m", "alembic", "downgrade", "006_payment_and_orders"], capture_output=True, text=True)
         assert p1.returncode == 0
 
         # Upgrade to head (007)
-        p2 = subprocess.run([".venv/Scripts/alembic.exe", "upgrade", "head"], capture_output=True, text=True)
+        p2 = subprocess.run([sys.executable, "-m", "alembic", "upgrade", "head"], capture_output=True, text=True)
         assert p2.returncode == 0
 
     def test_22_existing_phase_1_to_6_regression_tests_remain_passing(
