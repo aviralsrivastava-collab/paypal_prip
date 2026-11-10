@@ -9,6 +9,23 @@ from backend.core.config import get_settings
 settings = get_settings()
 
 
+def normalize_database_url(url: str) -> str:
+    """
+    Normalizes PostgreSQL connection strings for SQLAlchemy 2.0 with psycopg 3.
+    - Converts legacy 'postgres://' to 'postgresql+psycopg://'
+    - Converts bare 'postgresql://' to 'postgresql+psycopg://'
+    - Preserves explicit dialects like 'postgresql+psycopg://' or 'sqlite://'
+    """
+    if not url:
+        return url
+    trimmed = url.strip()
+    if trimmed.startswith("postgres://"):
+        trimmed = "postgresql://" + trimmed[len("postgres://"):]
+    if trimmed.startswith("postgresql://"):
+        trimmed = "postgresql+psycopg://" + trimmed[len("postgresql://"):]
+    return trimmed
+
+
 def get_engine_kwargs(database_url: str) -> Dict[str, Any]:
     """Returns engine keyword arguments based on dialect and settings."""
     if database_url.startswith("sqlite"):
@@ -39,7 +56,8 @@ def init_db_engine(database_url: Optional[str] = None) -> Engine:
     In non-production: falls back to SQLite for local development convenience.
     """
     current_settings = get_settings()
-    target_url = database_url or current_settings.database_url
+    raw_url = database_url or current_settings.database_url
+    target_url = normalize_database_url(raw_url)
     if current_settings.app_env.lower() == "production":
         if not target_url or target_url.lower().startswith("sqlite"):
             raise RuntimeError(

@@ -2,6 +2,7 @@ import datetime
 import json
 import uuid
 from decimal import Decimal
+from pathlib import Path
 
 import pytest
 from fastapi import HTTPException
@@ -625,21 +626,26 @@ class TestOperationalResilience:
         assert "raw_payload" not in item_dict
         assert "SENSITIVE_DATA_12345" not in json.dumps(item_dict)
 
-    def test_21_database_migration_upgrade_and_downgrade_work(self) -> None:
+    def test_21_database_migration_upgrade_and_downgrade_work(self, tmp_path: Path) -> None:
         """Scenario 21: Alembic migration upgrade to 007 and downgrade to 006 work without error."""
+        import os
         import subprocess
         import sys
 
+        test_db = (tmp_path / "test_resilience_alembic.db").as_posix()
+        test_env = dict(os.environ)
+        test_env["DATABASE_URL"] = f"sqlite:///{test_db}"
+
         # Ensure database is upgraded to head first (required on clean CI runners where db starts at base)
-        p0 = subprocess.run([sys.executable, "-m", "alembic", "upgrade", "head"], capture_output=True, text=True)
+        p0 = subprocess.run([sys.executable, "-m", "alembic", "upgrade", "head"], capture_output=True, text=True, env=test_env)
         assert p0.returncode == 0, f"Alembic upgrade to head failed: {p0.stderr}"
 
         # Downgrade to 006
-        p1 = subprocess.run([sys.executable, "-m", "alembic", "downgrade", "006_payment_and_orders"], capture_output=True, text=True)
+        p1 = subprocess.run([sys.executable, "-m", "alembic", "downgrade", "006_payment_and_orders"], capture_output=True, text=True, env=test_env)
         assert p1.returncode == 0, f"Alembic downgrade to 006 failed: {p1.stderr}"
 
         # Upgrade back to head
-        p2 = subprocess.run([sys.executable, "-m", "alembic", "upgrade", "head"], capture_output=True, text=True)
+        p2 = subprocess.run([sys.executable, "-m", "alembic", "upgrade", "head"], capture_output=True, text=True, env=test_env)
         assert p2.returncode == 0, f"Alembic upgrade back to head failed: {p2.stderr}"
 
     def test_22_existing_phase_1_to_6_regression_tests_remain_passing(

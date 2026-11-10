@@ -33,7 +33,7 @@ def upgrade() -> None:
         sa.Column("order_status", sa.String(length=50), nullable=False, server_default="CREATED"),
         sa.Column("payment_status", sa.String(length=50), nullable=False, server_default="PENDING"),
         sa.Column("preflight_scan_id", sa.Integer(), nullable=True),
-        sa.Column("preflight_passed", sa.Boolean(), nullable=False, server_default="0"),
+        sa.Column("preflight_passed", sa.Boolean(), nullable=False, server_default=sa.false()),
         sa.Column("idempotency_key", sa.String(length=100), nullable=True),
         sa.Column("correlation_id", sa.String(length=100), nullable=True),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),

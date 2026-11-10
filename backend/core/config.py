@@ -21,6 +21,14 @@ class Settings(BaseSettings):
     oidc_client_secret: str = ""
     oidc_jwt_secret: str = "prip-dev-oidc-secret-replace-in-production"
     oidc_jwks_url: str = ""
+    allowed_google_email: str = ""
+    default_merchant_id: str = "merchant_default"
+
+    @property
+    def allowed_google_emails_set(self) -> set[str]:
+        if not self.allowed_google_email:
+            return set()
+        return {e.strip().lower() for e in self.allowed_google_email.split(",") if e.strip()}
 
     # PayPal settings (Sandbox strictly enforced)
     paypal_client_type: str = "mock"

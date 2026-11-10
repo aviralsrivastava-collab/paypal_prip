@@ -21,9 +21,13 @@ import {
 
 export class ApiClient {
   private static getBaseUrl(): string {
-    const envUrl = (import.meta as any).env?.VITE_API_URL;
+    const envUrl =
+      (import.meta as any).env?.VITE_API_URL ||
+      (typeof process !== 'undefined' ? (process as any).env?.VITE_API_URL : undefined);
     if (envUrl && typeof envUrl === 'string') {
-      return envUrl.replace(/\/+$/, '');
+      const clean = envUrl.trim().replace(/\/+$/, '');
+      if (!clean) return '/api';
+      return clean.endsWith('/api') ? clean : `${clean}/api`;
     }
     return '/api';
   }

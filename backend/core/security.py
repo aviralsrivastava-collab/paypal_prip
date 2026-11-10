@@ -204,7 +204,11 @@ def verify_oidc_token(token: str) -> Dict[str, Any]:
         if settings.oidc_jwks_url and settings.oidc_issuer:
             parsed_jwks = urlparse(settings.oidc_jwks_url)
             parsed_issuer = urlparse(settings.oidc_issuer)
-            if parsed_jwks.netloc.lower() != parsed_issuer.netloc.lower():
+            is_google_authority = (
+                parsed_issuer.netloc.lower() in ("accounts.google.com", "google.com")
+                and parsed_jwks.netloc.lower() in ("www.googleapis.com", "googleapis.com")
+            )
+            if not is_google_authority and parsed_jwks.netloc.lower() != parsed_issuer.netloc.lower():
                 raise HTTPException(
                     status_code=status.HTTP_401_UNAUTHORIZED,
                     detail="Security violation: Configured JWKS URL does not belong to trusted OIDC issuer authority.",
@@ -238,7 +242,14 @@ def verify_oidc_token(token: str) -> Dict[str, Any]:
     token_has_iss = "iss" in unverified_claims
     token_has_aud = "aud" in unverified_claims
 
-    expected_issuer = settings.oidc_issuer if (is_production or token_has_iss) else None
+    expected_issuer_cfg = settings.oidc_issuer if (is_production or token_has_iss) else None
+    if expected_issuer_cfg in ("https://accounts.google.com", "accounts.google.com"):
+        expected_issuer: Any = ["https://accounts.google.com", "accounts.google.com"]
+    elif expected_issuer_cfg:
+        expected_issuer = expected_issuer_cfg
+    else:
+        expected_issuer = None
+
     expected_audience = settings.oidc_client_id if (is_production or token_has_aud) else None
 
     decode_options: Dict[str, Any] = {
@@ -303,6 +314,35 @@ def verify_oidc_token(token: str) -> Dict[str, Any]:
         or payload.get("org_id")
         or payload.get("tenant_id")
     )
+
+    # Google OAuth / standard OIDC email-to-merchant mapping
+    token_email = payload.get("email")
+    if not merchant_id and token_email:
+        # Require email_verified is explicitly True
+        email_verified = payload.get("email_verified")
+        if email_verified is not True:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Security violation: Google account email is not verified.",
+            )
+
+        clean_email = str(token_email).strip().lower()
+        allowed_emails = settings.allowed_google_emails_set
+        if allowed_emails and clean_email not in allowed_emails:
+            logger.warning("Rejected unallowlisted Google account email: %s", clean_email)
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Forbidden: Google account '{clean_email}' is not authorized to access this PRIP merchant.",
+            )
+
+        # Map to configured demo merchant ID server-side
+        merchant_id = settings.default_merchant_id
+        payload["merchant_id"] = merchant_id
+        if "role" not in payload:
+            payload["role"] = "merchant_operator"
+        if "actor_type" not in payload:
+            payload["actor_type"] = "merchant"
+
     if is_production and not merchant_id:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,

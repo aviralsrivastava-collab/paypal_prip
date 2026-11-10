@@ -27,7 +27,7 @@ def upgrade() -> None:
         sa.Column("source_version", sa.Integer(), nullable=False, server_default="1"),
         sa.Column("url", sa.String(length=255), nullable=False),
         sa.Column("state", sa.String(length=50), nullable=False),
-        sa.Column("is_comparable", sa.Boolean(), nullable=False, server_default=sa.text("0")),
+        sa.Column("is_comparable", sa.Boolean(), nullable=False, server_default=sa.false()),
         sa.Column("failure_reason", sa.Text(), nullable=True),
         sa.Column("catalog_price", sa.Numeric(precision=10, scale=2), nullable=True),
         sa.Column("observed_price", sa.Numeric(precision=10, scale=2), nullable=True),

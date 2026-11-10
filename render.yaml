@@ -7,7 +7,7 @@ services:
     env: python
     region: oregon
     plan: free
-    buildCommand: "pip install -r backend/requirements.txt && alembic upgrade head"
+    buildCommand: "pip install -r backend/requirements.txt"
     startCommand: "uvicorn backend.api.main:app --host 0.0.0.0 --port $PORT"
     healthCheckPath: /api/health
     autoDeploy: false
@@ -42,3 +42,5 @@ services:
         sync: false
       - key: OIDC_JWKS_URL
         value: https://www.googleapis.com/oauth2/v3/certs
+      - key: ALLOWED_GOOGLE_EMAIL
+        sync: false
