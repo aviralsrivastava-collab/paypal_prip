@@ -12,6 +12,26 @@ from backend.services.webhook import WebhookService
 router = APIRouter(prefix="/api/webhooks", tags=["Webhooks"])
 logger = logging.getLogger(__name__)
 
+_PAYPAL_SIGNATURE_HEADERS = (
+    "paypal-transmission-id",
+    "paypal-transmission-time",
+    "paypal-cert-url",
+    "paypal-auth-algo",
+    "paypal-transmission-sig",
+)
+
+
+def _paypal_signature_header_availability(headers: Dict[str, str]) -> Dict[str, bool]:
+    """Return non-empty availability flags without exposing signature header values."""
+    normalized = {
+        name.lower(): (value or "").strip()
+        for name, value in headers.items()
+    }
+    return {
+        header: bool(normalized.get(header))
+        for header in _PAYPAL_SIGNATURE_HEADERS
+    }
+
 
 @router.post(
     "/paypal",
@@ -30,18 +50,8 @@ async def paypal_webhook_listener(
     raw_body = raw_bytes.decode("utf-8")
     headers = dict(request.headers)
 
-    lower_header_keys = {k.lower() for k in headers}
-    presence = {
-        h: (h in lower_header_keys)
-        for h in (
-            "paypal-transmission-id",
-            "paypal-transmission-time",
-            "paypal-cert-url",
-            "paypal-auth-algo",
-            "paypal-transmission-sig",
-        )
-    }
-    logger.info("PayPal webhook header presence: %s", presence)
+    availability = _paypal_signature_header_availability(headers)
+    logger.info("PayPal webhook signature header availability: %s", availability)
 
     service = WebhookService(db)
     try:
