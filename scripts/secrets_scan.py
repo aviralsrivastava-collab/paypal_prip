@@ -363,11 +363,7 @@ def scan_directory(root_dir: Path) -> int:
             findings = scan_file(file_path)
             scanned_count += 1
             if findings:
-                for rule, line_no in findings:
-                    safe_rule = redact(str(rule))
-                    safe_file = redact(file_path.name)
-                    print(f"[ALERT] {safe_rule} detected at {safe_file}:{line_no}")
-                    total_findings += 1
+                total_findings += len(findings)
 
     print(f"\nScan completed: {scanned_count} files scanned across repository.")
     if total_findings == 0:
