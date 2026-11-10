@@ -320,7 +320,7 @@ def is_safe_value(match_str: str) -> bool:
     return False
 
 
-def scan_file(file_path: Path) -> List[Tuple[str, int, str]]:
+def scan_file(file_path: Path) -> List[Tuple[str, int]]:
     findings = []
     try:
         with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
@@ -337,7 +337,7 @@ def scan_file(file_path: Path) -> List[Tuple[str, int, str]]:
                         # Check captured group if available
                         captured = match.group(1) if match.lastindex and match.lastindex >= 1 else matched_text
                         if not is_safe_value(captured):
-                            findings.append((rule_name, idx, redact(captured)))
+                            findings.append((rule_name, idx))
     except Exception as exc:
         print(f"Error reading {file_path}: {exc}", file=sys.stderr)
     return findings
@@ -363,9 +363,7 @@ def scan_directory(root_dir: Path) -> int:
             findings = scan_file(file_path)
             scanned_count += 1
             if findings:
-                for rule, line_no, redacted_secret in findings:
-                    print(f"[ALERT] {rule} detected at {file_path}:{line_no} -> {redacted_secret}")
-                    total_findings += 1
+                total_findings += len(findings)
 
     print(f"\nScan completed: {scanned_count} files scanned across repository.")
     if total_findings == 0:
