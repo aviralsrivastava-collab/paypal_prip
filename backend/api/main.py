@@ -1,5 +1,20 @@
+import sys
+import types
 import uuid
+from pathlib import Path
 from typing import Any
+
+# If 'backend' is not in sys.modules (e.g. deployed with root: "backend"),
+# bind the current package directory to the 'backend' namespace.
+if "backend" not in sys.modules:
+    try:
+        import backend  # noqa: F401
+    except ModuleNotFoundError:
+        _backend_dir = str(Path(__file__).resolve().parent.parent)
+        _backend_mod = types.ModuleType("backend")
+        _backend_mod.__path__ = [_backend_dir]
+        _backend_mod.__file__ = str(Path(_backend_dir) / "__init__.py")
+        sys.modules["backend"] = _backend_mod
 
 from fastapi import FastAPI, Request, status
 from fastapi.middleware.cors import CORSMiddleware
@@ -102,11 +117,7 @@ async def security_and_tracing_middleware(request: Request, call_next):
 # CORS middleware for local frontend communication
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:3000",
-        "http://localhost:5173",
-        settings.controlled_storefront_base_url,
-    ],
+    allow_origins=settings.cors_origins_list,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -122,6 +133,17 @@ app.include_router(corrections_router)
 app.include_router(checkout_router)
 app.include_router(webhooks_router)
 app.include_router(operations_router)
+
+
+@app.get("/", tags=["Root"])
+def root():
+    return {
+        "name": settings.app_name,
+        "version": settings.app_version,
+        "status": "online",
+        "docs_url": "/docs",
+        "health_url": "/api/health",
+    }
 
 
 @app.on_event("startup")

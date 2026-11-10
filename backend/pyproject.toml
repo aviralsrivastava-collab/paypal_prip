@@ -17,8 +17,12 @@ dependencies = [
     "alembic>=1.13.1,<2.0.0",
     "httpx>=0.28.0",
     "pyjwt[crypto]>=2.8.0",
+    "psycopg[binary]>=3.1.18",
     "python-dotenv>=1.0.0"
 ]
+
+[tool.vercel]
+entrypoint = "api/main.py:app"
 
 [tool.setuptools]
 py-modules = ["worker"]

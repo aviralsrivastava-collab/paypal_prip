@@ -20,7 +20,15 @@ import {
 } from '../types';
 
 export class ApiClient {
-  private static baseUrl = '/api';
+  private static getBaseUrl(): string {
+    const envUrl = (import.meta as any).env?.VITE_API_URL;
+    if (envUrl && typeof envUrl === 'string') {
+      return envUrl.replace(/\/+$/, '');
+    }
+    return '/api';
+  }
+
+  private static baseUrl = ApiClient.getBaseUrl();
 
   public static async getHealth(): Promise<HealthStatus> {
     const res = await fetch(`${this.baseUrl}/health`);

@@ -1,6 +1,6 @@
 version: 3
 tunnels:
-  prip-webhook:
+  prip-ingress:
     proto: http
     addr: 127.0.0.1:8085
     inspect: true

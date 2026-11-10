@@ -1,0 +1,44 @@
+# PRIP — Render Blueprint Configuration (Free Tier Web Service)
+# For complete instructions, see docs/PRIP_FREE_TIER_DEPLOYMENT_GUIDE.md
+version: "1"
+services:
+  - type: web
+    name: prip-backend
+    env: python
+    region: oregon
+    plan: free
+    buildCommand: "pip install -r backend/requirements.txt && alembic upgrade head"
+    startCommand: "uvicorn backend.api.main:app --host 0.0.0.0 --port $PORT"
+    healthCheckPath: /api/health
+    autoDeploy: false
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.9
+      - key: APP_ENV
+        value: production
+      - key: DATABASE_URL
+        sync: false
+      - key: SESSION_SECRET
+        generateValue: true
+      - key: CORS_ALLOWED_ORIGINS
+        value: https://paypalprip.vercel.app
+      - key: CONTROLLED_STOREFRONT_BASE_URL
+        value: https://paypalprip.vercel.app
+      - key: PAYPAL_MODE
+        value: sandbox
+      - key: PAYPAL_ENVIRONMENT
+        value: sandbox
+      - key: PAYPAL_BASE_URL
+        value: https://api-m.sandbox.paypal.com
+      - key: PAYPAL_CLIENT_ID
+        sync: false
+      - key: PAYPAL_CLIENT_SECRET
+        sync: false
+      - key: PAYPAL_WEBHOOK_ID
+        sync: false
+      - key: OIDC_ISSUER
+        value: https://accounts.google.com
+      - key: OIDC_CLIENT_ID
+        sync: false
+      - key: OIDC_JWKS_URL
+        value: https://www.googleapis.com/oauth2/v3/certs

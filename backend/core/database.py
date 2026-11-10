@@ -40,6 +40,12 @@ def init_db_engine(database_url: Optional[str] = None) -> Engine:
     """
     current_settings = get_settings()
     target_url = database_url or current_settings.database_url
+    if current_settings.app_env.lower() == "production":
+        if not target_url or target_url.lower().startswith("sqlite"):
+            raise RuntimeError(
+                "Production environment requires a valid PostgreSQL connection string (DATABASE_URL). "
+                "SQLite is strictly prohibited in production. Engine fails closed without fallback."
+            )
     try:
         return create_app_engine(target_url)
     except Exception as exc:

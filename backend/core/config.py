@@ -33,6 +33,14 @@ class Settings(BaseSettings):
 
     # Controlled storefront URL allowlist & SSRF guards
     controlled_storefront_base_url: str = "http://localhost:3000"
+    cors_allowed_origins: str = "http://localhost:3000,http://localhost:5173,https://paypalprip.vercel.app"
+
+    @property
+    def cors_origins_list(self) -> list[str]:
+        origins = [o.strip() for o in self.cors_allowed_origins.split(",") if o.strip()]
+        if self.controlled_storefront_base_url not in origins:
+            origins.append(self.controlled_storefront_base_url)
+        return origins
 
     # AI Diagnostic settings (strictly advisory)
     ai_provider: str = "mock"
