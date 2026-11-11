@@ -1,3 +1,4 @@
+import threading
 import uuid
 from decimal import Decimal
 from typing import Any, Dict, Optional
@@ -20,6 +21,7 @@ class MockPayPalClient(PayPalClientInterface):
 
     _shared_orders: Dict[str, Dict[str, Any]] = {}
     _shared_orders_by_request_id: Dict[str, str] = {}
+    _lock = threading.Lock()
     received_request_ids: list[str] = []
 
     def __init__(
@@ -132,48 +134,55 @@ class MockPayPalClient(PayPalClientInterface):
         if self.simulate_error:
             raise PayPalApiError(500, "INTERNAL_SERVER_ERROR", "Simulated capture failure")
 
-        order = self._orders.get(paypal_order_id)
-        amount = order["amount"] if order else Decimal("100.00")
-        currency = order["currency"] if order else "USD"
+        with self._lock:
+            order = self._orders.get(paypal_order_id)
+            amount = order["amount"] if order else Decimal("100.00")
+            currency = order["currency"] if order else "USD"
 
-        if self.simulate_decline:
-            capture_id = f"MOCK-CAP-DECLINED-{uuid.uuid4().hex[:6].upper()}"
+            if self.simulate_decline:
+                capture_id = f"MOCK-CAP-DECLINED-{uuid.uuid4().hex[:6].upper()}"
+                if order:
+                    order["status"] = "DECLINED"
+                return PayPalCaptureResponse(
+                    paypal_capture_id=capture_id,
+                    paypal_order_id=paypal_order_id,
+                    status="DECLINED",
+                    amount=amount,
+                    currency=currency,
+                    fee_amount=Decimal("0.00"),
+                    net_amount=Decimal("0.00"),
+                    raw_response={"status": "DECLINED", "reason": "INSTRUMENT_DECLINED"},
+                )
+
+            if order and order.get("capture_id"):
+                capture_id = order["capture_id"]
+            else:
+                capture_id = f"MOCK-CAP-{uuid.uuid4().hex[:8].upper()}"
+                if order:
+                    order["capture_id"] = capture_id
+
+            if self.simulate_missing_fee_breakdown:
+                fee_amount = None
+                net_amount = None
+                receivable_breakdown = {}
+            else:
+                fee_amount = Decimal("3.49")
+                net_amount = amount - fee_amount
+                receivable_breakdown = {
+                    "gross_amount": {"value": str(amount), "currency_code": currency},
+                    "paypal_fee": {"value": str(fee_amount), "currency_code": currency},
+                    "net_amount": {"value": str(net_amount), "currency_code": currency},
+                }
+
             if order:
-                order["status"] = "DECLINED"
-            return PayPalCaptureResponse(
-                paypal_capture_id=capture_id,
-                paypal_order_id=paypal_order_id,
-                status="DECLINED",
-                amount=amount,
-                currency=currency,
-                fee_amount=Decimal("0.00"),
-                net_amount=Decimal("0.00"),
-                raw_response={"status": "DECLINED", "reason": "INSTRUMENT_DECLINED"},
-            )
+                order["status"] = "COMPLETED"
 
-        capture_id = f"MOCK-CAP-{uuid.uuid4().hex[:8].upper()}"
-        if self.simulate_missing_fee_breakdown:
-            fee_amount = None
-            net_amount = None
-            receivable_breakdown = {}
-        else:
-            fee_amount = Decimal("3.49")
-            net_amount = amount - fee_amount
-            receivable_breakdown = {
-                "gross_amount": {"value": str(amount), "currency_code": currency},
-                "paypal_fee": {"value": str(fee_amount), "currency_code": currency},
-                "net_amount": {"value": str(net_amount), "currency_code": currency},
+            raw_payload = {
+                "id": capture_id,
+                "status": "COMPLETED",
+                "amount": {"value": str(amount), "currency_code": currency},
+                "seller_receivable_breakdown": receivable_breakdown,
             }
-
-        if order:
-            order["status"] = "COMPLETED"
-
-        raw_payload = {
-            "id": capture_id,
-            "status": "COMPLETED",
-            "amount": {"value": str(amount), "currency_code": currency},
-            "seller_receivable_breakdown": receivable_breakdown,
-        }
 
         return PayPalCaptureResponse(
             paypal_capture_id=capture_id,

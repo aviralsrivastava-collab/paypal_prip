@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 from backend.core.database import get_db
 from backend.core.security import (
     AuthenticatedActor,
-    get_current_actor,
+    get_optional_actor,
     require_demo_operator,
     require_merchant_access,
 )
@@ -19,7 +19,7 @@ router = APIRouter(prefix="/api/products", tags=["Catalog Products"])
 @router.get("", response_model=List[ProductComparisonResponse], summary="List catalog products")
 def list_products(
     db: Session = Depends(get_db),
-    current_actor: Optional[AuthenticatedActor] = Depends(get_current_actor),
+    current_actor: Optional[AuthenticatedActor] = Depends(get_optional_actor),
 ) -> List[ProductComparisonResponse]:
     """
     Returns merchant-authorized catalog products alongside their current storefront prices
@@ -35,7 +35,7 @@ def list_products(
 def get_product(
     product_id: int,
     db: Session = Depends(get_db),
-    current_actor: Optional[AuthenticatedActor] = Depends(get_current_actor),
+    current_actor: Optional[AuthenticatedActor] = Depends(get_optional_actor),
 ) -> ProductResponse:
     """
     Fetches isolated merchant-authorized catalog product facts by product ID.
@@ -57,7 +57,7 @@ def get_product(
 def get_product_by_sku(
     sku: str,
     db: Session = Depends(get_db),
-    current_actor: Optional[AuthenticatedActor] = Depends(get_current_actor),
+    current_actor: Optional[AuthenticatedActor] = Depends(get_optional_actor),
 ) -> ProductComparisonResponse:
     """
     Fetches catalog product by SKU with storefront discrepancy comparison.

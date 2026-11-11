@@ -65,10 +65,10 @@ def list_proposals(
     approval_status: Optional[str] = Query(None, description="Filter by approval status"),
     execution_status: Optional[str] = Query(None, description="Filter by execution status"),
     db: Session = Depends(get_db),
-    current_actor: Optional[AuthenticatedActor] = Depends(get_current_actor),
+    current_actor: AuthenticatedActor = Depends(get_current_actor),
 ) -> List[CorrectionProposalResponse]:
     """Retrieves correction proposals with optional status, SKU, and tenant filtering."""
-    actor = current_actor if isinstance(current_actor, AuthenticatedActor) else None
+    actor = current_actor if isinstance(current_actor, AuthenticatedActor) else get_current_actor()
     merchant_id = actor.merchant_id if actor else None
     service = ProposalService(db)
     proposals = service.proposal_repo.list_proposals(
@@ -88,15 +88,15 @@ def list_proposals(
 def get_proposal(
     proposal_id: int,
     db: Session = Depends(get_db),
-    current_actor: Optional[AuthenticatedActor] = Depends(get_current_actor),
+    current_actor: AuthenticatedActor = Depends(get_current_actor),
 ) -> CorrectionProposalResponse:
     """Retrieves full details for a correction proposal."""
     service = ProposalService(db)
     proposal_entity = service.proposal_repo.get_by_id(proposal_id)
     if not proposal_entity:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Proposal #{proposal_id} not found.")
-    if isinstance(current_actor, AuthenticatedActor):
-        require_merchant_access(current_actor, proposal_entity.merchant_id)
+    actor = current_actor if isinstance(current_actor, AuthenticatedActor) else get_current_actor()
+    require_merchant_access(actor, proposal_entity.merchant_id)
     proposal_res = service.get_proposal(proposal_id)
     if not proposal_res:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Proposal #{proposal_id} not found.")

@@ -1,9 +1,10 @@
 import React, { useEffect, useState } from 'react';
 import { ApiClient } from '../services/api';
-import { Order, PaymentCapture, PreflightResult } from '../types';
+import { Order, PaymentCapture, PreflightResult, ProductComparison } from '../types';
 
 export const Checkout: React.FC = () => {
   const [sku, setSku] = useState('SX-001');
+  const [products, setProducts] = useState<ProductComparison[]>([]);
   const [preflight, setPreflight] = useState<PreflightResult | null>(null);
   const [loadingPreflight, setLoadingPreflight] = useState(false);
   const [preflightError, setPreflightError] = useState<string | null>(null);
@@ -15,6 +16,7 @@ export const Checkout: React.FC = () => {
   const [captureResult, setCaptureResult] = useState<PaymentCapture | null>(null);
   const [capturing, setCapturing] = useState(false);
   const [captureError, setCaptureError] = useState<string | null>(null);
+  const [cancelNotice, setCancelNotice] = useState<string | null>(null);
 
   const [simulateTimeout, setSimulateTimeout] = useState(false);
   const [simulateDecline, setSimulateDecline] = useState(false);
@@ -40,20 +42,63 @@ export const Checkout: React.FC = () => {
     }
   };
 
+  // On mount: fetch catalog products and inspect URL query parameters for PayPal return/cancel
   useEffect(() => {
+    ApiClient.getProducts().then(setProducts).catch(() => {});
+
+    if (typeof window !== 'undefined' && window.location.search) {
+      const params = new URLSearchParams(window.location.search);
+      const token = params.get('token');
+      const statusParam = params.get('status');
+
+      if (statusParam === 'cancelled') {
+        setCancelNotice('Payment was cancelled in PayPal Sandbox. No funds were captured.');
+        window.history.replaceState({}, document.title, window.location.pathname);
+      } else if (token) {
+        window.history.replaceState({}, document.title, window.location.pathname);
+        setCapturing(true);
+        ApiClient.captureOrder(token)
+          .then((cap) => {
+            setCaptureResult(cap);
+            ApiClient.getOrder(token)
+              .then((ord) => setActiveOrder(ord))
+              .catch(() => {});
+          })
+          .catch((err: unknown) => {
+            const msg = err instanceof Error ? err.message : 'Failed to capture payment';
+            setCaptureError(msg);
+          })
+          .finally(() => {
+            setCapturing(false);
+          });
+      }
+    }
+
     runPreflight();
   }, []);
+
+  const handleProductSelect = (selectedSku: string) => {
+    setSku(selectedSku);
+    runPreflight(selectedSku);
+  };
 
   const handleCreateOrder = async () => {
     setCreatingOrder(true);
     setOrderError(null);
+    setCancelNotice(null);
     try {
-      const order = await ApiClient.createOrder(sku, 1);
+      const returnUrl = typeof window !== 'undefined' ? `${window.location.origin}/checkout?status=approved` : undefined;
+      const cancelUrl = typeof window !== 'undefined' ? `${window.location.origin}/checkout?status=cancelled` : undefined;
+      const order = await ApiClient.createOrder(sku, 1, returnUrl, cancelUrl);
       setActiveOrder(order);
+      if (order.approve_url) {
+        if (typeof window !== 'undefined' && !navigator.userAgent.includes('jsdom')) {
+          window.location.href = order.approve_url;
+        }
+      }
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Failed to create order';
       setOrderError(msg);
-    } finally {
       setCreatingOrder(false);
     }
   };
@@ -105,6 +150,16 @@ export const Checkout: React.FC = () => {
     }
   };
 
+  const handleResetCheckout = () => {
+    setActiveOrder(null);
+    setCaptureResult(null);
+    setCaptureError(null);
+    setOrderError(null);
+    setCancelNotice(null);
+    setReconcileMessage(null);
+    runPreflight();
+  };
+
   return (
     <div style={{ maxWidth: '1000px', margin: '0 auto', padding: '2rem', fontFamily: 'system-ui, sans-serif' }}>
       <h2>PayPal Sandbox Checkout Demo</h2>
@@ -128,6 +183,55 @@ export const Checkout: React.FC = () => {
           commercial revenue or conversion lift. Live credentials are never used.
         </p>
       </div>
+
+      {cancelNotice && (
+        <div
+          role="status"
+          style={{
+            padding: '1rem',
+            border: '1px solid #f59e0b',
+            backgroundColor: '#fffbeb',
+            borderRadius: '6px',
+            marginBottom: '1.5rem',
+            display: 'flex',
+            justifyContent: 'space-between',
+            alignItems: 'center',
+          }}
+        >
+          <p style={{ margin: 0, color: '#b45309' }}>
+            <strong>Checkout Cancelled:</strong> {cancelNotice}
+          </p>
+          <button
+            onClick={() => setCancelNotice(null)}
+            style={{
+              padding: '0.3rem 0.6rem',
+              backgroundColor: '#f59e0b',
+              color: 'white',
+              border: 'none',
+              borderRadius: '4px',
+              cursor: 'pointer',
+            }}
+          >
+            Dismiss
+          </button>
+        </div>
+      )}
+
+      {capturing && (
+        <div
+          role="status"
+          style={{
+            padding: '1rem',
+            border: '1px solid #3b82f6',
+            backgroundColor: '#eff6ff',
+            borderRadius: '6px',
+            marginBottom: '1.5rem',
+            color: '#1d4ed8',
+          }}
+        >
+          <strong>Processing PayPal Sandbox Approval:</strong> Capturing payment and verifying receipt with backend...
+        </div>
+      )}
 
       {/* Preflight Check Card */}
       <div
@@ -158,16 +262,37 @@ export const Checkout: React.FC = () => {
           </button>
         </div>
 
-        <div style={{ marginBottom: '1rem' }}>
-          <label style={{ display: 'block', fontSize: '0.9rem', color: '#666', marginBottom: '0.2rem' }}>
-            Product SKU:
-          </label>
-          <input
-            type="text"
-            value={sku}
-            onChange={(e) => setSku(e.target.value)}
-            style={{ padding: '0.4rem', border: '1px solid #ccc', borderRadius: '4px', width: '200px' }}
-          />
+        <div style={{ marginBottom: '1rem', display: 'flex', gap: '1rem', alignItems: 'flex-end', flexWrap: 'wrap' }}>
+          <div>
+            <label style={{ display: 'block', fontSize: '0.9rem', color: '#666', marginBottom: '0.2rem' }}>
+              Select Catalog Product:
+            </label>
+            <select
+              value={sku}
+              onChange={(e) => handleProductSelect(e.target.value)}
+              style={{ padding: '0.4rem', border: '1px solid #ccc', borderRadius: '4px', minWidth: '240px' }}
+            >
+              {products.map((p) => (
+                <option key={p.sku} value={p.sku}>
+                  {p.sku} — {p.title} ({p.merchant_currency} {p.merchant_price})
+                </option>
+              ))}
+              {!products.some((p) => p.sku === 'SX-001') && (
+                <option value="SX-001">SX-001 — StrideX Runner (USD 100.00)</option>
+              )}
+            </select>
+          </div>
+          <div>
+            <label style={{ display: 'block', fontSize: '0.9rem', color: '#666', marginBottom: '0.2rem' }}>
+              Product SKU:
+            </label>
+            <input
+              type="text"
+              value={sku}
+              onChange={(e) => setSku(e.target.value)}
+              style={{ padding: '0.4rem', border: '1px solid #ccc', borderRadius: '4px', width: '120px' }}
+            />
+          </div>
         </div>
 
         {preflightError && (
@@ -322,8 +447,27 @@ export const Checkout: React.FC = () => {
             </div>
 
             {activeOrder.approve_url && (
-              <div style={{ marginTop: '0.8rem', fontSize: '0.85rem', color: '#666' }}>
-                <strong>Sandbox Redirect:</strong> <code>{activeOrder.approve_url}</code>
+              <div style={{ marginTop: '1rem', padding: '0.8rem', backgroundColor: '#fffdf0', border: '1px solid #ffd700', borderRadius: '6px' }}>
+                <p style={{ margin: '0 0 0.5rem 0', fontSize: '0.9rem' }}>
+                  <strong>PayPal Sandbox Approval Required:</strong>
+                </p>
+                <a
+                  href={activeOrder.approve_url}
+                  style={{
+                    display: 'inline-block',
+                    padding: '0.5rem 1rem',
+                    backgroundColor: '#0070ba',
+                    color: 'white',
+                    textDecoration: 'none',
+                    borderRadius: '4px',
+                    fontWeight: 'bold',
+                  }}
+                >
+                  Proceed to PayPal Sandbox Login & Approval →
+                </a>
+                <div style={{ marginTop: '0.5rem', fontSize: '0.8rem', color: '#666' }}>
+                  <strong>Sandbox Redirect:</strong> <code>{activeOrder.approve_url}</code>
+                </div>
               </div>
             )}
           </div>
@@ -479,6 +623,25 @@ export const Checkout: React.FC = () => {
                 <p style={{ margin: '0.5rem 0 0', color: '#c62828', fontSize: '0.85rem' }}>
                   <strong>Note:</strong> {captureResult.error_message}
                 </p>
+              )}
+              {captureResult.status === 'COMPLETED' && (
+                <div style={{ marginTop: '1rem' }}>
+                  <button
+                    onClick={handleResetCheckout}
+                    style={{
+                      padding: '0.4rem 0.8rem',
+                      backgroundColor: '#2e7d32',
+                      color: 'white',
+                      border: 'none',
+                      borderRadius: '4px',
+                      cursor: 'pointer',
+                      fontSize: '0.85rem',
+                      fontWeight: 'bold',
+                    }}
+                  >
+                    Start New Checkout
+                  </button>
+                </div>
               )}
             </div>
           )}

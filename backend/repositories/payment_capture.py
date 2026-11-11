@@ -33,6 +33,19 @@ class PaymentCaptureRepository:
         stmt = stmt.order_by(PaymentCapture.created_at.desc())
         return self.session.execute(stmt).scalars().first()
 
+    def get_completed_by_order_id(self, order_id: int, include_quarantined: bool = False) -> Optional[PaymentCapture]:
+        stmt = (
+            select(PaymentCapture)
+            .where(
+                PaymentCapture.order_id == order_id,
+                PaymentCapture.status == "COMPLETED",
+            )
+        )
+        if not include_quarantined:
+            stmt = stmt.where(PaymentCapture.merchant_id != "QUARANTINED_ORPHAN")
+        stmt = stmt.order_by(PaymentCapture.created_at.desc())
+        return self.session.execute(stmt).scalars().first()
+
     def get_by_paypal_capture_id(self, paypal_capture_id: str, include_quarantined: bool = False) -> Optional[PaymentCapture]:
         stmt = select(PaymentCapture).where(PaymentCapture.paypal_capture_id == paypal_capture_id)
         if not include_quarantined:

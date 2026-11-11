@@ -78,6 +78,11 @@ def list_webhook_events(
     current_actor: AuthenticatedActor = Depends(get_current_actor),
     db: Session = Depends(get_db),
 ) -> List[WebhookEventResponse]:
+    if not isinstance(current_actor, AuthenticatedActor):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Merchant authentication required to list webhook events.",
+        )
     service = WebhookService(db)
     events = service.webhook_repo.list_events(limit=50)
     return [WebhookEventResponse.model_validate(e) for e in events]

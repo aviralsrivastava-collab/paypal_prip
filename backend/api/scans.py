@@ -50,7 +50,7 @@ def trigger_scan(
 def get_scan(
     scan_id: int,
     db: Session = Depends(get_db),
-    current_actor: Optional[AuthenticatedActor] = Depends(get_current_actor),
+    current_actor: AuthenticatedActor = Depends(get_current_actor),
 ) -> ScanDetailResponse:
     """
     Returns scan results with comparability metrics and structured evidence items.
@@ -62,8 +62,8 @@ def get_scan(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Inspection scan with ID {scan_id} not found.",
         )
-    if isinstance(current_actor, AuthenticatedActor):
-        require_merchant_access(current_actor, scan.merchant_id)
+    actor = current_actor if isinstance(current_actor, AuthenticatedActor) else get_current_actor()
+    require_merchant_access(actor, scan.merchant_id)
     return scan
 
 
@@ -71,7 +71,7 @@ def get_scan(
 def get_scan_evidence(
     scan_id: int,
     db: Session = Depends(get_db),
-    current_actor: Optional[AuthenticatedActor] = Depends(get_current_actor),
+    current_actor: AuthenticatedActor = Depends(get_current_actor),
 ) -> List[EvidenceItemResponse]:
     """
     Returns the immutable structured evidence items produced by the specified scan.
@@ -84,8 +84,8 @@ def get_scan_evidence(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Inspection scan with ID {scan_id} not found.",
         )
-    if isinstance(current_actor, AuthenticatedActor):
-        require_merchant_access(current_actor, scan.merchant_id)
+    actor = current_actor if isinstance(current_actor, AuthenticatedActor) else get_current_actor()
+    require_merchant_access(actor, scan.merchant_id)
     return service.get_scan_evidence(scan_id)
 
 
@@ -93,12 +93,12 @@ def get_scan_evidence(
 def list_product_scans(
     sku: str,
     db: Session = Depends(get_db),
-    current_actor: Optional[AuthenticatedActor] = Depends(get_current_actor),
+    current_actor: AuthenticatedActor = Depends(get_current_actor),
 ) -> List[ScanSummaryResponse]:
     """
     Returns the historical inspection timeline for a given product SKU.
     """
-    actor = current_actor if isinstance(current_actor, AuthenticatedActor) else None
+    actor = current_actor if isinstance(current_actor, AuthenticatedActor) else get_current_actor()
     merchant_id = actor.merchant_id if actor else None
     service = InspectionService(db)
     scans = service.scan_repo.list_by_sku(sku, merchant_id=merchant_id)

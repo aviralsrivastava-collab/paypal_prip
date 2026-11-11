@@ -3,6 +3,7 @@ import json
 import logging
 from decimal import Decimal
 from typing import Any, Dict, Optional
+from urllib.parse import urlparse
 
 import httpx
 
@@ -56,7 +57,7 @@ class PayPalSandboxClient(PayPalClientInterface):
 
         token_url = f"{self.base_url}/v1/oauth2/token"
         try:
-            with httpx.Client(timeout=self.timeout_seconds) as client:
+            with httpx.Client(timeout=self.timeout_seconds, follow_redirects=False) as client:
                 resp = client.post(
                     token_url,
                     data={"grant_type": "client_credentials"},
@@ -124,7 +125,7 @@ class PayPalSandboxClient(PayPalClientInterface):
             headers["PayPal-Request-Id"] = paypal_request_id
 
         try:
-            with httpx.Client(timeout=self.timeout_seconds) as client:
+            with httpx.Client(timeout=self.timeout_seconds, follow_redirects=False) as client:
                 resp = client.post(url, json=payload, headers=headers)
         except httpx.TimeoutException as exc:
             raise PayPalTimeoutError(f"Order creation timed out: {exc}") from exc
@@ -162,7 +163,7 @@ class PayPalSandboxClient(PayPalClientInterface):
     def get_order_details(self, paypal_order_id: str) -> PayPalOrderResponse:
         url = f"{self.base_url}/v2/checkout/orders/{paypal_order_id}"
         try:
-            with httpx.Client(timeout=self.timeout_seconds) as client:
+            with httpx.Client(timeout=self.timeout_seconds, follow_redirects=False) as client:
                 resp = client.get(url, headers=self._headers())
         except httpx.TimeoutException as exc:
             raise PayPalTimeoutError(f"Get order details timed out: {exc}") from exc
@@ -210,7 +211,7 @@ class PayPalSandboxClient(PayPalClientInterface):
             headers["PayPal-Request-Id"] = paypal_request_id
 
         try:
-            with httpx.Client(timeout=self.timeout_seconds) as client:
+            with httpx.Client(timeout=self.timeout_seconds, follow_redirects=False) as client:
                 resp = client.post(url, json={}, headers=headers)
         except httpx.TimeoutException as exc:
             raise PayPalTimeoutError(f"Order capture timed out: {exc}") from exc
@@ -265,8 +266,44 @@ class PayPalSandboxClient(PayPalClientInterface):
         """
         Calls official PayPal verify-webhook-signature REST endpoint.
         Preserves raw body JSON and passes exact transmission headers.
+        Validates presence of all 5 signature headers, cert_url host authority, and webhook_id.
         """
-        norm_headers = {k.lower(): v for k, v in headers.items()}
+        norm_headers = {k.lower(): (v or "").strip() for k, v in headers.items()}
+
+        required_headers = (
+            "paypal-transmission-id",
+            "paypal-transmission-time",
+            "paypal-cert-url",
+            "paypal-auth-algo",
+            "paypal-transmission-sig",
+        )
+        if not all(norm_headers.get(h) for h in required_headers):
+            logger.warning("Missing required PayPal signature headers in incoming webhook transmission")
+            return False
+
+        if not webhook_id or not webhook_id.strip():
+            logger.warning("Configured PayPal webhook ID is empty; cannot verify signature")
+            return False
+
+        # Cert URL security: must be HTTPS, no userinfo, standard port 443, and belong to legitimate PayPal domain
+        cert_url = norm_headers.get("paypal-cert-url", "")
+        try:
+            parsed_cert = urlparse(cert_url)
+            cert_host = (parsed_cert.hostname or "").lower()
+            if (
+                parsed_cert.scheme != "https"
+                or parsed_cert.username is not None
+                or parsed_cert.password is not None
+                or (parsed_cert.port is not None and parsed_cert.port != 443)
+                or not cert_host
+                or not (cert_host == "paypal.com" or cert_host.endswith(".paypal.com"))
+            ):
+                logger.warning(f"Rejected untrusted paypal-cert-url: {cert_url}")
+                return False
+        except Exception as exc:
+            logger.warning(f"Failed to parse paypal-cert-url '{cert_url}': {exc}")
+            return False
+
         try:
             webhook_event = json.loads(raw_body)
         except Exception:
@@ -276,16 +313,16 @@ class PayPalSandboxClient(PayPalClientInterface):
         verification_payload = {
             "transmission_id": norm_headers.get("paypal-transmission-id"),
             "transmission_time": norm_headers.get("paypal-transmission-time"),
-            "cert_url": norm_headers.get("paypal-cert-url"),
+            "cert_url": cert_url,
             "auth_algo": norm_headers.get("paypal-auth-algo"),
             "transmission_sig": norm_headers.get("paypal-transmission-sig"),
-            "webhook_id": webhook_id,
+            "webhook_id": webhook_id.strip(),
             "webhook_event": webhook_event,
         }
 
         url = f"{self.base_url}/v1/notifications/verify-webhook-signature"
         try:
-            with httpx.Client(timeout=self.timeout_seconds) as client:
+            with httpx.Client(timeout=self.timeout_seconds, follow_redirects=False) as client:
                 resp = client.post(url, json=verification_payload, headers=self._headers())
         except Exception as exc:
             logger.error(f"Error calling PayPal webhook verification endpoint: {exc}")

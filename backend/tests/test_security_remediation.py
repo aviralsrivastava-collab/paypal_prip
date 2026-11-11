@@ -12,6 +12,7 @@ from backend.api.corrections import (
     approve_proposal,
     cancel_proposal,
     execute_proposal,
+    get_proposal,
     reject_proposal,
 )
 from backend.api.diagnoses import create_diagnosis, list_scan_diagnoses
@@ -20,6 +21,7 @@ from backend.api.operations import (
     list_stuck_webhooks,
     replay_webhook_event,
 )
+from backend.api.scans import get_scan, get_scan_evidence
 from backend.api.storefront import update_storefront_price
 from backend.core.config import get_settings
 from backend.core.database import init_db_engine
@@ -751,3 +753,282 @@ def test_production_engine_fails_closed_without_sqlite_fallback(monkeypatch):
             init_db_engine()
         assert "Production database connection failed" in str(exc.value)
         assert "Engine fails closed without fallback" in str(exc.value)
+
+
+# ---------------------------------------------------------------------------
+# Phase 6 Comprehensive Security Regressions
+# ---------------------------------------------------------------------------
+
+
+def test_cross_tenant_proposal_and_scan_read_access_blocked(db_session: Session):
+    """
+    Phase 6: Verifies Merchant A cannot view Merchant B's proposal details,
+    scan details, or evidence items (HTTP 403 Forbidden).
+    """
+    prod = Product(
+        merchant_id="merchant_b",
+        sku="SX-SEC-01",
+        title="Sec Runner",
+        price=Decimal("100.00"),
+        currency="USD",
+        availability="IN_STOCK",
+        source_version=1,
+    )
+    db_session.add(prod)
+    db_session.commit()
+    db_session.refresh(prod)
+
+    scan = StorefrontScan(
+        merchant_id="merchant_b",
+        product_id=prod.id,
+        sku="SX-SEC-01",
+        url="https://merchant-b.store/products/runner",
+        state="ISSUE_DETECTED",
+        correlation_id="corr-scan-b-02",
+    )
+    db_session.add(scan)
+    db_session.commit()
+    db_session.refresh(scan)
+
+    now = datetime.datetime.now(datetime.timezone.utc)
+    proposal = CorrectionProposal(
+        merchant_id="merchant_b",
+        scan_id=scan.id,
+        product_id=prod.id,
+        sku="SX-SEC-01",
+        proposal_type="PRICE_SYNCHRONIZATION",
+        current_value=Decimal("120.00"),
+        proposed_value=Decimal("100.00"),
+        currency="USD",
+        reason="Cross-tenant test proposal",
+        policy_validation_status=PolicyValidationStatus.VALID.value,
+        approval_status=ApprovalStatus.PENDING_APPROVAL.value,
+        execution_status=ExecutionStatus.NOT_STARTED.value,
+        created_by="system",
+        expires_at=now + datetime.timedelta(hours=24),
+    )
+    db_session.add(proposal)
+    db_session.commit()
+    db_session.refresh(proposal)
+
+    actor_a = AuthenticatedActor(
+        actor_id="actor_a",
+        role="merchant_admin",
+        merchant_id="merchant_a",
+    )
+
+    # 1. Merchant A cannot read Merchant B's proposal -> 403
+    with pytest.raises(HTTPException) as exc:
+        get_proposal(proposal_id=proposal.id, db=db_session, current_actor=actor_a)
+    assert exc.value.status_code == 403
+
+    # 2. Merchant A cannot read Merchant B's scan details -> 403
+    with pytest.raises(HTTPException) as exc:
+        get_scan(scan_id=scan.id, db=db_session, current_actor=actor_a)
+    assert exc.value.status_code == 403
+
+    # 3. Merchant A cannot read Merchant B's scan evidence -> 403
+    with pytest.raises(HTTPException) as exc:
+        get_scan_evidence(scan_id=scan.id, db=db_session, current_actor=actor_a)
+    assert exc.value.status_code == 403
+
+
+def test_unauthenticated_and_expired_oidc_tokens_fail_closed(monkeypatch):
+    """
+    Phase 6: Verifies that expired OIDC tokens, forged signatures, and unverified
+    Google accounts fail closed with appropriate HTTP 401 or 403.
+    """
+    settings = get_settings()
+    monkeypatch.setattr(settings, "app_env", "production")
+    monkeypatch.setattr(settings, "oidc_issuer", "https://accounts.google.com")
+    monkeypatch.setattr(settings, "oidc_client_id", "prip-api")
+    monkeypatch.setattr(settings, "oidc_jwks_url", "https://www.googleapis.com/oauth2/v3/certs")
+    monkeypatch.setattr(settings, "allowed_google_email", "authorized@prip.demo")
+
+    priv_pem, pub_pem = generate_test_rsa_key_pair()
+    register_test_jwks_key("key-exp-1", pub_pem)
+
+    now = datetime.datetime.now(datetime.timezone.utc)
+
+    # 1. Expired token raises 401
+    expired_payload = {
+        "sub": "user-123",
+        "iss": "https://accounts.google.com",
+        "aud": "prip-api",
+        "exp": int((now - datetime.timedelta(minutes=10)).timestamp()),
+        "email": "authorized@prip.demo",
+        "email_verified": True,
+    }
+    expired_token = create_rsa_jwt_token(expired_payload, priv_pem, kid="key-exp-1")
+    with pytest.raises(HTTPException) as exc:
+        verify_oidc_token(expired_token)
+    assert exc.value.status_code == 401
+    assert "JWT token has expired" in exc.value.detail
+
+    # 2. Forged signature raises 401
+    other_priv_pem, _ = generate_test_rsa_key_pair()
+    valid_payload = {
+        "sub": "user-123",
+        "iss": "https://accounts.google.com",
+        "aud": "prip-api",
+        "exp": int((now + datetime.timedelta(hours=1)).timestamp()),
+        "email": "authorized@prip.demo",
+        "email_verified": True,
+    }
+    forged_token = create_rsa_jwt_token(valid_payload, other_priv_pem, kid="key-exp-1")
+    with pytest.raises(HTTPException) as exc:
+        verify_oidc_token(forged_token)
+    assert exc.value.status_code == 401
+    assert "Invalid JWT signature" in exc.value.detail
+
+    # 3. Unverified email raises 401
+    unverified_email_payload = {
+        "sub": "user-123",
+        "iss": "https://accounts.google.com",
+        "aud": "prip-api",
+        "exp": int((now + datetime.timedelta(hours=1)).timestamp()),
+        "email": "authorized@prip.demo",
+        "email_verified": False,
+    }
+    unverified_token = create_rsa_jwt_token(unverified_email_payload, priv_pem, kid="key-exp-1")
+    with pytest.raises(HTTPException) as exc:
+        verify_oidc_token(unverified_token)
+    assert exc.value.status_code == 401
+    assert "Google account email is not verified" in exc.value.detail
+
+    # 4. Unallowlisted email raises 403
+    unallowlisted_payload = {
+        "sub": "user-123",
+        "iss": "https://accounts.google.com",
+        "aud": "prip-api",
+        "exp": int((now + datetime.timedelta(hours=1)).timestamp()),
+        "email": "attacker@otherdomain.com",
+        "email_verified": True,
+    }
+    unallowlisted_token = create_rsa_jwt_token(unallowlisted_payload, priv_pem, kid="key-exp-1")
+    with pytest.raises(HTTPException) as exc:
+        verify_oidc_token(unallowlisted_token)
+    assert exc.value.status_code == 403
+    assert "Forbidden: Google account" in exc.value.detail
+
+
+def test_invalid_jwks_signature_forgery_rejected(monkeypatch):
+    """
+    Phase 6: Verifies that tokens with an unresolvable or untrusted kid fail closed.
+    """
+    settings = get_settings()
+    monkeypatch.setattr(settings, "app_env", "production")
+    monkeypatch.setattr(settings, "oidc_issuer", "https://accounts.google.com")
+    monkeypatch.setattr(settings, "oidc_client_id", "prip-api")
+    monkeypatch.setattr(settings, "oidc_jwks_url", "https://www.googleapis.com/oauth2/v3/certs")
+
+    priv_pem, _ = generate_test_rsa_key_pair()
+    now = datetime.datetime.now(datetime.timezone.utc)
+    payload = {
+        "sub": "user-123",
+        "iss": "https://accounts.google.com",
+        "aud": "prip-api",
+        "exp": int((now + datetime.timedelta(hours=1)).timestamp()),
+        "email": "test@demo.com",
+        "email_verified": True,
+    }
+    # Unregistered key ID
+    token = create_rsa_jwt_token(payload, priv_pem, kid="nonexistent-kid-999")
+    with pytest.raises(HTTPException) as exc:
+        verify_oidc_token(token)
+    assert exc.value.status_code == 401
+    assert "Unable to obtain signing key from JWKS endpoint" in exc.value.detail
+
+
+def test_webhook_signature_forgery_and_duplicate_events(db_session: Session):
+    """
+    Phase 6: Verifies that forged webhook signatures are rejected with ValueError,
+    and duplicate event submissions are recognized without re-executing transitions.
+    """
+    from backend.integrations.paypal.mock_client import MockPayPalClient
+    from backend.services.webhook import WebhookService
+
+    # 1. Forged signature rejected
+    mock_client = MockPayPalClient()
+    mock_client.simulate_invalid_signature = True
+    webhook_service = WebhookService(db_session, paypal_client=mock_client)
+
+    headers = {
+        "paypal-transmission-id": "t-forged-1",
+        "paypal-transmission-time": "2026-11-11T12:00:00Z",
+        "paypal-cert-url": "https://api.sandbox.paypal.com/cert.pem",
+        "paypal-auth-algo": "SHA256withRSA",
+        "paypal-transmission-sig": "FORGED",
+    }
+    import json
+    raw_payload = json.dumps({"id": "WH-FORGED-01", "event_type": "PAYMENT.CAPTURE.COMPLETED"})
+
+    with pytest.raises(ValueError, match="Cryptographic webhook signature verification failed"):
+        webhook_service.process_webhook(headers=headers, raw_body=raw_payload)
+
+    # 2. Valid event followed by duplicate submission
+    mock_client.simulate_invalid_signature = False
+    valid_headers = {
+        "paypal-transmission-id": "t-valid-1",
+        "paypal-transmission-time": "2026-11-11T12:00:00Z",
+        "paypal-cert-url": "https://api.sandbox.paypal.com/cert.pem",
+        "paypal-auth-algo": "SHA256withRSA",
+        "paypal-transmission-sig": "VALID_SIGNATURE",
+    }
+    valid_payload = json.dumps({
+        "id": "WH-DUP-TEST-01",
+        "event_type": "CHECKOUT.ORDER.APPROVED",
+        "resource": {"id": "NONEXISTENT-ORD"},
+    })
+
+    resp1 = webhook_service.process_webhook(headers=valid_headers, raw_body=valid_payload)
+    assert resp1.paypal_event_id == "WH-DUP-TEST-01"
+
+    # Duplicate submission
+    resp2 = webhook_service.process_webhook(headers=valid_headers, raw_body=valid_payload)
+    assert resp2.paypal_event_id == "WH-DUP-TEST-01"
+    assert resp2.status == "DUPLICATE"
+
+
+def test_payment_capture_retry_idempotency(db_session: Session):
+    """
+    Phase 6: Verifies repeated capture requests on the same order reuse existing capture
+    and do not create duplicate rows or alter COMPLETED status.
+    """
+    from backend.integrations.paypal.mock_client import MockPayPalClient
+    from backend.models.payment_capture import PaymentCapture
+    from backend.repositories.storefront import StorefrontRepository
+    from backend.schemas.checkout import CreateOrderRequest
+    from backend.schemas.payment import CapturePaymentRequest
+    from backend.services.catalog import CatalogService
+    from backend.services.checkout import CheckoutService
+    from backend.services.payment import PaymentService
+
+    cat_service = CatalogService(db_session)
+    cat_service.seed_initial_catalog(reset=True)
+
+    st_repo = StorefrontRepository(db_session)
+    prod = st_repo.get_by_sku("SX-001")
+    assert prod is not None
+    prod.price = Decimal("100.00")
+    db_session.commit()
+
+    mock_paypal = MockPayPalClient()
+    checkout_service = CheckoutService(db_session, paypal_client=mock_paypal)
+    order_resp = checkout_service.create_order(CreateOrderRequest(sku="SX-001", quantity=1), actor_id="buyer")
+
+    payment_service = PaymentService(db_session, paypal_client=mock_paypal)
+    cap_req = CapturePaymentRequest(order_id=order_resp.order_id)
+
+    # First capture
+    cap1 = payment_service.capture_payment(cap_req, actor_id="buyer")
+    assert cap1.status == "COMPLETED"
+
+    # Immediate second capture
+    cap2 = payment_service.capture_payment(cap_req, actor_id="buyer")
+    assert cap2.status == "COMPLETED"
+    assert cap2.capture_id == cap1.capture_id
+
+    # Verify exactly one record in DB
+    stored = db_session.query(PaymentCapture).filter(PaymentCapture.order_id == order_resp.id).all()
+    assert len(stored) == 1

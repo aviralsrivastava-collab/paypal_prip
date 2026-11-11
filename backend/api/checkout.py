@@ -4,7 +4,12 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
 from backend.core.database import get_db
-from backend.core.security import AuthenticatedActor, get_current_actor, require_merchant_access
+from backend.core.security import (
+    AuthenticatedActor,
+    get_current_actor,
+    get_optional_actor,
+    require_merchant_access,
+)
 from backend.schemas.checkout import (
     CreateOrderRequest,
     OrderResponse,
@@ -48,20 +53,24 @@ def preflight_check(
 )
 def create_order(
     request: CreateOrderRequest,
-    current_actor: AuthenticatedActor = Depends(get_current_actor),
+    current_actor: Optional[AuthenticatedActor] = Depends(get_optional_actor),
     db: Session = Depends(get_db),
 ) -> OrderResponse:
     """
     Creates an order after verifying preflight conditions.
     Initializes PayPal Sandbox order and reserves demo inventory.
+    Accepts public buyer checkout requests as well as authenticated merchant calls.
     """
     service = CheckoutService(db)
+    actor_id = current_actor.actor_id if current_actor else "buyer_guest"
+    actor_type = current_actor.actor_type if current_actor else "customer"
+    merchant_id = current_actor.merchant_id if current_actor else None
     try:
         return service.create_order(
             request=request,
-            actor_id=current_actor.actor_id,
-            actor_type=current_actor.actor_type,
-            merchant_id=current_actor.merchant_id,
+            actor_id=actor_id,
+            actor_type=actor_type,
+            merchant_id=merchant_id,
         )
     except ValueError as exc:
         msg = str(exc)
@@ -80,12 +89,13 @@ def create_order(
 def capture_order(
     order_id: str,
     request: Optional[CapturePaymentRequest] = None,
-    current_actor: AuthenticatedActor = Depends(get_current_actor),
+    current_actor: Optional[AuthenticatedActor] = Depends(get_optional_actor),
     db: Session = Depends(get_db),
 ) -> CapturePaymentResponse:
     """
     Executes authoritative server-side capture against PayPal.
     On network timeout, transitions order to UNKNOWN state with reconciliation required.
+    Allows returning buyer approval callbacks and authenticated merchant operations.
     """
     service = PaymentService(db)
     order = service.order_repo.get_by_order_id(order_id)
@@ -93,15 +103,18 @@ def capture_order(
         order = service.order_repo.get_by_paypal_order_id(order_id)
     if not order:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Order '{order_id}' not found.")
-    require_merchant_access(current_actor, order.merchant_id)
+    if current_actor:
+        require_merchant_access(current_actor, order.merchant_id)
 
     req = request or CapturePaymentRequest(order_id=order_id)
     req.order_id = order_id
+    actor_id = current_actor.actor_id if current_actor else "buyer_guest"
+    actor_type = current_actor.actor_type if current_actor else "customer"
     try:
         return service.capture_payment(
             request=req,
-            actor_id=current_actor.actor_id,
-            actor_type=current_actor.actor_type,
+            actor_id=actor_id,
+            actor_type=actor_type,
             trusted_actor=current_actor,
         )
     except ValueError as exc:
@@ -126,6 +139,11 @@ def reconcile_order(
     """
     Queries authoritative PayPal status for an ambiguous order to resolve payment outcome.
     """
+    if not isinstance(current_actor, AuthenticatedActor):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Merchant authentication required to reconcile orders.",
+        )
     service = PaymentService(db)
     order = service.order_repo.get_by_order_id(order_id)
     if not order:
@@ -155,12 +173,11 @@ def reconcile_order(
 )
 def list_orders(
     db: Session = Depends(get_db),
-    current_actor: Optional[AuthenticatedActor] = Depends(get_current_actor),
+    current_actor: AuthenticatedActor = Depends(get_current_actor),
 ) -> List[OrderResponse]:
-    actor = current_actor if isinstance(current_actor, AuthenticatedActor) else None
-    merchant_id = actor.merchant_id if actor else None
+    actor = current_actor if isinstance(current_actor, AuthenticatedActor) else get_current_actor()
     service = CheckoutService(db)
-    orders = service.order_repo.list_orders(limit=50, merchant_id=merchant_id)
+    orders = service.order_repo.list_orders(limit=50, merchant_id=actor.merchant_id)
     return [OrderResponse.model_validate(o) for o in orders]
 
 
@@ -172,7 +189,7 @@ def list_orders(
 def get_order(
     order_id: str,
     db: Session = Depends(get_db),
-    current_actor: Optional[AuthenticatedActor] = Depends(get_current_actor),
+    current_actor: Optional[AuthenticatedActor] = Depends(get_optional_actor),
 ) -> OrderResponse:
     service = CheckoutService(db)
     order = service.order_repo.get_by_order_id(order_id)

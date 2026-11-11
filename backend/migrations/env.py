@@ -33,7 +33,7 @@ def _custom_version_table_impl(
     return vt
 
 
-DefaultImpl.version_table_impl = _custom_version_table_impl
+setattr(DefaultImpl, "version_table_impl", _custom_version_table_impl)
 
 config = context.config
 

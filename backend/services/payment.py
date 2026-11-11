@@ -4,17 +4,21 @@ import logging
 import uuid
 from typing import Optional
 
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
+from sqlalchemy.orm.exc import FlushError, StaleDataError
 
 from backend.core.database import atomic_transaction
 from backend.core.security import AuthenticatedActor, require_merchant_access
 from backend.integrations.paypal import (
     PayPalApiError,
+    PayPalCaptureResponse,
     PayPalClientInterface,
     PayPalTimeoutError,
     get_paypal_client,
 )
 from backend.integrations.paypal.mock_client import MockPayPalClient
+from backend.models.order import Order
 from backend.models.payment_capture import PaymentCapture
 from backend.models.reconciliation import PaymentReconciliation
 from backend.policies.checkout_policy import (
@@ -85,7 +89,7 @@ class PaymentService:
 
         # 2. Check for idempotent already-captured state
         if order.payment_status == PaymentStatus.CAPTURED.value:
-            existing_capture = self.capture_repo.get_by_order_id(order.id)
+            existing_capture = self.capture_repo.get_completed_by_order_id(order.id)
             if existing_capture:
                 return CapturePaymentResponse(
                     capture_id=existing_capture.paypal_capture_id,
@@ -119,6 +123,9 @@ class PaymentService:
             raise ValueError(f"Order '{order.order_id}' has no associated PayPal Order ID.")
 
         correlation_id = f"cap_corr_{uuid.uuid4().hex[:12]}"
+        order_db_id = order.id
+        order_str_id = order.order_id
+        order_paypal_id = order.paypal_order_id
 
         # 4. Configure test simulation flags on Mock client if requested
         if isinstance(self.paypal_client, MockPayPalClient):
@@ -127,9 +134,12 @@ class PaymentService:
             if request.simulate_decline:
                 self.paypal_client.simulate_decline = True
 
+        # Release read-only transaction before outbound network call to prevent idle snapshot staleness
+        self.session.rollback()
+
         # 5. External PayPal capture OUTSIDE database transaction
         # Stable PayPal-Request-Id ensures repeated/retried capture attempts are idempotent
-        paypal_request_id = request.idempotency_key or f"cap_{order.order_id}"
+        paypal_request_id = request.idempotency_key or f"cap_{order_str_id}"
         try:
             paypal_capture = self.paypal_client.capture_order(
                 order.paypal_order_id,
@@ -137,29 +147,37 @@ class PaymentService:
             )
         except PayPalTimeoutError as exc:
             # Ambiguous outcome! Must persist UNKNOWN state transactionally.
-            logger.warning(f"PayPal capture timed out for order {order.order_id}: {exc}")
+            logger.warning(f"PayPal capture timed out for order {order_str_id}: {exc}")
             now = datetime.datetime.now(datetime.timezone.utc)
             with atomic_transaction(self.session):
-                order.payment_status = PaymentStatus.UNKNOWN.value
-                capture = PaymentCapture(
-                    merchant_id=order.merchant_id,
-                    order_id=order.id,
-                    paypal_capture_id=None,
-                    status=CaptureStatus.UNKNOWN.value,
-                    amount=order.total_amount,
-                    currency=order.currency,
-                    error_message=str(exc),
-                    reconciliation_status=ReconciliationStatus.RECONCILIATION_REQUIRED.value,
-                )
-                self.capture_repo.create(capture)
+                curr_order = self.session.get(Order, order_db_id) or order
+                curr_order.payment_status = PaymentStatus.UNKNOWN.value
+                existing_capture = self.capture_repo.get_by_order_id(curr_order.id)
+                if not existing_capture:
+                    capture = PaymentCapture(
+                        merchant_id=curr_order.merchant_id,
+                        order_id=curr_order.id,
+                        paypal_capture_id=None,
+                        status=CaptureStatus.UNKNOWN.value,
+                        amount=curr_order.total_amount,
+                        currency=curr_order.currency,
+                        error_message=str(exc),
+                        reconciliation_status=ReconciliationStatus.RECONCILIATION_REQUIRED.value,
+                    )
+                    self.capture_repo.create(capture)
+                else:
+                    capture = existing_capture
+                    capture.status = CaptureStatus.UNKNOWN.value
+                    capture.reconciliation_status = ReconciliationStatus.RECONCILIATION_REQUIRED.value
+                    capture.error_message = str(exc)
 
                 AuditService.log_event(
                     self.session,
                     AuditEventCreate(
-                        merchant_id=order.merchant_id,
+                        merchant_id=curr_order.merchant_id,
                         action="PAYMENT_CAPTURE_TIMEOUT",
                         entity_type="Order",
-                        entity_id=order.order_id,
+                        entity_id=curr_order.order_id,
                         approval_id=None,
                         actor_type=actor_type,
                         actor_id=actor_id,
@@ -172,7 +190,7 @@ class PaymentService:
 
             return CapturePaymentResponse(
                 capture_id=None,
-                order_id=order.order_id,
+                order_id=order_str_id,
                 paypal_order_id=order.paypal_order_id,
                 status=CaptureStatus.UNKNOWN.value,
                 amount=order.total_amount,
@@ -184,148 +202,253 @@ class PaymentService:
                 created_at=now,
             )
         except (PayPalApiError, Exception) as exc:
-            logger.error(f"PayPal capture error for order {order.order_id}: {exc}")
-            now = datetime.datetime.now(datetime.timezone.utc)
-            with atomic_transaction(self.session):
-                order.payment_status = PaymentStatus.FAILED.value
-                order.order_status = OrderStatus.FAILED.value
-                capture = PaymentCapture(
-                    merchant_id=order.merchant_id,
-                    order_id=order.id,
-                    paypal_capture_id=None,
+            is_already_captured = (
+                isinstance(exc, PayPalApiError)
+                and (
+                    "ORDER_ALREADY_CAPTURED" in (exc.error_message or "")
+                    or "ORDER_ALREADY_CAPTURED" in (exc.error_name or "")
+                )
+            )
+            if is_already_captured:
+                logger.info(
+                    "PayPal reported ORDER_ALREADY_CAPTURED for order %s. Reconciling authoritative details.",
+                    order_str_id,
+                )
+                order_details = self.paypal_client.get_order_details(order.paypal_order_id)
+                if order_details.status == "COMPLETED":
+                    paypal_capture = PayPalCaptureResponse(
+                        paypal_capture_id=f"CAP-{order.paypal_order_id}",
+                        paypal_order_id=order.paypal_order_id,
+                        status="COMPLETED",
+                        amount=order_details.amount,
+                        currency=order_details.currency,
+                        fee_amount=None,
+                        net_amount=None,
+                        raw_response=order_details.raw_response,
+                    )
+                else:
+                    logger.error(f"Authoritative reconciliation did not confirm COMPLETED: {order_details.status}")
+                    raise exc
+            else:
+                logger.error(f"PayPal capture error for order {order_str_id}: {exc}")
+                now = datetime.datetime.now(datetime.timezone.utc)
+                with atomic_transaction(self.session):
+                    curr_order = self.session.get(Order, order_db_id) or order
+                    curr_order.payment_status = PaymentStatus.FAILED.value
+                    curr_order.order_status = OrderStatus.FAILED.value
+                    existing_capture = self.capture_repo.get_by_order_id(curr_order.id)
+                    if not existing_capture:
+                        capture = PaymentCapture(
+                            merchant_id=curr_order.merchant_id,
+                            order_id=curr_order.id,
+                            paypal_capture_id=None,
+                            status=CaptureStatus.FAILED.value,
+                            amount=curr_order.total_amount,
+                            currency=curr_order.currency,
+                            error_message=str(exc),
+                            reconciliation_status=ReconciliationStatus.NOT_NEEDED.value,
+                        )
+                        self.capture_repo.create(capture)
+                    else:
+                        capture = existing_capture
+                        capture.status = CaptureStatus.FAILED.value
+                        capture.error_message = str(exc)
+
+                    AuditService.log_event(
+                        self.session,
+                        AuditEventCreate(
+                            merchant_id=curr_order.merchant_id,
+                            action="PAYMENT_CAPTURE_FAILED",
+                            entity_type="Order",
+                            entity_id=curr_order.order_id,
+                            approval_id=None,
+                            actor_type=actor_type,
+                            actor_id=actor_id,
+                            correlation_id=correlation_id,
+                            before_state=PaymentStatus.PENDING.value,
+                            after_state=PaymentStatus.FAILED.value,
+                            details=f"PayPal capture failed: {exc}",
+                        ),
+                    )
+
+                return CapturePaymentResponse(
+                    capture_id=None,
+                    order_id=order_str_id,
+                    paypal_order_id=order.paypal_order_id,
                     status=CaptureStatus.FAILED.value,
                     amount=order.total_amount,
                     currency=order.currency,
-                    error_message=str(exc),
+                    fee_amount=None,
+                    net_amount=None,
                     reconciliation_status=ReconciliationStatus.NOT_NEEDED.value,
+                    error_message=str(exc),
+                    created_at=now,
                 )
-                self.capture_repo.create(capture)
-
-                AuditService.log_event(
-                    self.session,
-                    AuditEventCreate(
-                        merchant_id=order.merchant_id,
-                        action="PAYMENT_CAPTURE_FAILED",
-                        entity_type="Order",
-                        entity_id=order.order_id,
-                        approval_id=None,
-                        actor_type=actor_type,
-                        actor_id=actor_id,
-                        correlation_id=correlation_id,
-                        before_state=PaymentStatus.PENDING.value,
-                        after_state=PaymentStatus.FAILED.value,
-                        details=f"PayPal capture failed: {exc}",
-                    ),
-                )
-
-            return CapturePaymentResponse(
-                capture_id=None,
-                order_id=order.order_id,
-                paypal_order_id=order.paypal_order_id,
-                status=CaptureStatus.FAILED.value,
-                amount=order.total_amount,
-                currency=order.currency,
-                fee_amount=None,
-                net_amount=None,
-                reconciliation_status=ReconciliationStatus.NOT_NEEDED.value,
-                error_message=str(exc),
-                created_at=now,
-            )
 
         # 6. Process successful or declined capture response in atomic transaction
         is_completed = (paypal_capture.status == "COMPLETED")
-        now = datetime.datetime.now(datetime.timezone.utc)
 
-        with atomic_transaction(self.session):
-            if is_completed:
-                order.payment_status = PaymentStatus.CAPTURED.value
-                order.order_status = OrderStatus.COMPLETED.value
+        try:
+            with atomic_transaction(self.session):
+                curr_order = self.session.get(Order, order_db_id, with_for_update=True) or self.order_repo.get_by_id(order_db_id) or order
+                if not curr_order:
+                    raise ValueError(f"Order '{order_str_id}' not found.")
 
-                # Commit inventory reservation
-                reservation = self.reservation_repo.get_by_order_id(order.id)
-                if reservation:
-                    reservation.status = ReservationStatus.COMMITTED.value
+                existing_completed_capture = self.capture_repo.get_completed_by_order_id(curr_order.id)
 
-                capture = PaymentCapture(
-                    merchant_id=order.merchant_id,
-                    order_id=order.id,
-                    paypal_capture_id=paypal_capture.paypal_capture_id,
-                    status=CaptureStatus.COMPLETED.value,
-                    amount=paypal_capture.amount,
-                    currency=paypal_capture.currency,
-                    fee_amount=paypal_capture.fee_amount,
-                    net_amount=paypal_capture.net_amount,
-                    reconciliation_status=ReconciliationStatus.NOT_NEEDED.value,
+                if curr_order.payment_status == PaymentStatus.CAPTURED.value and existing_completed_capture:
+                    # Concurrent request already successfully completed capture
+                    capture = existing_completed_capture
+                elif is_completed:
+                    curr_order.payment_status = PaymentStatus.CAPTURED.value
+                    curr_order.order_status = OrderStatus.COMPLETED.value
+
+                    # Commit inventory reservation
+                    reservation = self.reservation_repo.get_by_order_id(curr_order.id)
+                    if reservation:
+                        reservation.status = ReservationStatus.COMMITTED.value
+
+                    if not existing_completed_capture:
+                        capture = PaymentCapture(
+                            merchant_id=curr_order.merchant_id,
+                            order_id=curr_order.id,
+                            paypal_capture_id=paypal_capture.paypal_capture_id,
+                            status=CaptureStatus.COMPLETED.value,
+                            amount=paypal_capture.amount,
+                            currency=paypal_capture.currency,
+                            fee_amount=paypal_capture.fee_amount,
+                            net_amount=paypal_capture.net_amount,
+                            reconciliation_status=ReconciliationStatus.NOT_NEEDED.value,
+                        )
+                        self.capture_repo.create(capture)
+                    else:
+                        capture = existing_completed_capture
+                        if paypal_capture.paypal_capture_id and not capture.paypal_capture_id:
+                            capture.paypal_capture_id = paypal_capture.paypal_capture_id
+                        if paypal_capture.fee_amount is not None:
+                            capture.fee_amount = paypal_capture.fee_amount
+                        if paypal_capture.net_amount is not None:
+                            capture.net_amount = paypal_capture.net_amount
+                        capture.reconciliation_status = ReconciliationStatus.NOT_NEEDED.value
+
+                    AuditService.log_event(
+                        self.session,
+                        AuditEventCreate(
+                            merchant_id=curr_order.merchant_id,
+                            action="PAYMENT_CAPTURED",
+                            entity_type="Order",
+                            entity_id=curr_order.order_id,
+                            approval_id=None,
+                            actor_type=actor_type,
+                            actor_id=actor_id,
+                            correlation_id=correlation_id,
+                            before_state=PaymentStatus.PENDING.value,
+                            after_state=PaymentStatus.CAPTURED.value,
+                            details=json.dumps({
+                                "paypal_capture_id": paypal_capture.paypal_capture_id,
+                                "amount": str(paypal_capture.amount),
+                                "currency": paypal_capture.currency,
+                                "fee": str(paypal_capture.fee_amount) if paypal_capture.fee_amount else None,
+                                "net": str(paypal_capture.net_amount) if paypal_capture.net_amount else None,
+                            }),
+                        ),
+                    )
+                else:
+                    curr_order.payment_status = PaymentStatus.FAILED.value
+                    curr_order.order_status = OrderStatus.FAILED.value
+
+                    existing_capture = self.capture_repo.get_by_order_id(curr_order.id)
+                    if not existing_capture:
+                        capture = PaymentCapture(
+                            merchant_id=curr_order.merchant_id,
+                            order_id=curr_order.id,
+                            paypal_capture_id=paypal_capture.paypal_capture_id,
+                            status=paypal_capture.status,
+                            amount=paypal_capture.amount,
+                            currency=paypal_capture.currency,
+                            error_message=f"Capture returned non-completed status: {paypal_capture.status}",
+                            reconciliation_status=ReconciliationStatus.NOT_NEEDED.value,
+                        )
+                        self.capture_repo.create(capture)
+                    else:
+                        capture = existing_capture
+                        capture.status = paypal_capture.status
+                        capture.error_message = f"Capture returned non-completed status: {paypal_capture.status}"
+
+                    AuditService.log_event(
+                        self.session,
+                        AuditEventCreate(
+                            merchant_id=curr_order.merchant_id,
+                            action="PAYMENT_CAPTURE_DECLINED",
+                            entity_type="Order",
+                            entity_id=curr_order.order_id,
+                            approval_id=None,
+                            actor_type=actor_type,
+                            actor_id=actor_id,
+                            correlation_id=correlation_id,
+                            before_state=PaymentStatus.PENDING.value,
+                            after_state=PaymentStatus.FAILED.value,
+                            details=f"Payment capture returned status: {paypal_capture.status}",
+                        ),
+                    )
+
+                # Extract primitive values inside transaction block before commit expires ORM attributes
+                res_capture_id = capture.paypal_capture_id
+                res_order_id = curr_order.order_id
+                res_paypal_order_id = curr_order.paypal_order_id
+                res_status = capture.status
+                res_amount = capture.amount
+                res_currency = capture.currency
+                res_fee_amount = capture.fee_amount
+                res_net_amount = capture.net_amount
+                res_reconciliation_status = capture.reconciliation_status
+                res_error_message = capture.error_message
+                res_created_at = capture.created_at
+        except (IntegrityError, FlushError, StaleDataError):
+            self.session.rollback()
+            # Uniqueness-collision recovery: retrieve strictly the winning COMPLETED capture for this order
+            completed_capture = self.capture_repo.get_completed_by_order_id(order_db_id)
+            if not completed_capture and paypal_capture.paypal_capture_id:
+                cap_by_pid = self.capture_repo.get_by_paypal_capture_id(paypal_capture.paypal_capture_id)
+                if (
+                    cap_by_pid
+                    and cap_by_pid.order_id == order_db_id
+                    and cap_by_pid.status == CaptureStatus.COMPLETED.value
+                ):
+                    completed_capture = cap_by_pid
+
+            if (
+                completed_capture
+                and completed_capture.order_id == order_db_id
+                and completed_capture.status == CaptureStatus.COMPLETED.value
+            ):
+                return CapturePaymentResponse(
+                    capture_id=completed_capture.paypal_capture_id,
+                    order_id=order_str_id,
+                    paypal_order_id=order_paypal_id,
+                    status=completed_capture.status,
+                    amount=completed_capture.amount,
+                    currency=completed_capture.currency,
+                    fee_amount=completed_capture.fee_amount,
+                    net_amount=completed_capture.net_amount,
+                    reconciliation_status=completed_capture.reconciliation_status,
+                    error_message=completed_capture.error_message,
+                    created_at=completed_capture.created_at,
                 )
-                self.capture_repo.create(capture)
-
-                AuditService.log_event(
-                    self.session,
-                    AuditEventCreate(
-                        merchant_id=order.merchant_id,
-                        action="PAYMENT_CAPTURED",
-                        entity_type="Order",
-                        entity_id=order.order_id,
-                        approval_id=None,
-                        actor_type=actor_type,
-                        actor_id=actor_id,
-                        correlation_id=correlation_id,
-                        before_state=PaymentStatus.PENDING.value,
-                        after_state=PaymentStatus.CAPTURED.value,
-                        details=json.dumps({
-                            "paypal_capture_id": paypal_capture.paypal_capture_id,
-                            "amount": str(paypal_capture.amount),
-                            "currency": paypal_capture.currency,
-                            "fee": str(paypal_capture.fee_amount) if paypal_capture.fee_amount else None,
-                            "net": str(paypal_capture.net_amount) if paypal_capture.net_amount else None,
-                        }),
-                    ),
-                )
-            else:
-                order.payment_status = PaymentStatus.FAILED.value
-                order.order_status = OrderStatus.FAILED.value
-
-                capture = PaymentCapture(
-                    merchant_id=order.merchant_id,
-                    order_id=order.id,
-                    paypal_capture_id=paypal_capture.paypal_capture_id,
-                    status=paypal_capture.status,
-                    amount=paypal_capture.amount,
-                    currency=paypal_capture.currency,
-                    error_message=f"Capture returned non-completed status: {paypal_capture.status}",
-                    reconciliation_status=ReconciliationStatus.NOT_NEEDED.value,
-                )
-                self.capture_repo.create(capture)
-
-                AuditService.log_event(
-                    self.session,
-                    AuditEventCreate(
-                        merchant_id=order.merchant_id,
-                        action="PAYMENT_CAPTURE_DECLINED",
-                        entity_type="Order",
-                        entity_id=order.order_id,
-                        approval_id=None,
-                        actor_type=actor_type,
-                        actor_id=actor_id,
-                        correlation_id=correlation_id,
-                        before_state=PaymentStatus.PENDING.value,
-                        after_state=PaymentStatus.FAILED.value,
-                        details=f"Payment capture returned status: {paypal_capture.status}",
-                    ),
-                )
+            raise
 
         return CapturePaymentResponse(
-            capture_id=capture.paypal_capture_id,
-            order_id=order.order_id,
-            paypal_order_id=order.paypal_order_id,
-            status=capture.status,
-            amount=capture.amount,
-            currency=capture.currency,
-            fee_amount=capture.fee_amount,
-            net_amount=capture.net_amount,
-            reconciliation_status=capture.reconciliation_status,
-            error_message=capture.error_message,
-            created_at=capture.created_at,
+            capture_id=res_capture_id,
+            order_id=res_order_id,
+            paypal_order_id=res_paypal_order_id,
+            status=res_status,
+            amount=res_amount,
+            currency=res_currency,
+            fee_amount=res_fee_amount,
+            net_amount=res_net_amount,
+            reconciliation_status=res_reconciliation_status,
+            error_message=res_error_message,
+            created_at=res_created_at,
         )
 
     def reconcile_payment(
@@ -419,6 +542,18 @@ class PaymentService:
                     order.order_status = OrderStatus.COMPLETED.value
                     if reservation:
                         reservation.status = ReservationStatus.COMMITTED.value
+                    if not capture:
+                        capture = PaymentCapture(
+                            merchant_id=order.merchant_id,
+                            order_id=order.id,
+                            paypal_capture_id=f"CAP-{order.paypal_order_id}",
+                            status=CaptureStatus.COMPLETED.value,
+                            amount=order.total_amount,
+                            currency=order.currency,
+                            reconciliation_status=ReconciliationStatus.RECONCILED.value,
+                            reconciled_at=now,
+                        )
+                        self.capture_repo.create(capture)
                     outcome = "RESOLVED_CAPTURED"
                     message = "Reconciliation identified missing capture webhook and transitioned order to CAPTURED."
                     action_name = "PAYMENT_RECONCILED_SUCCESS"

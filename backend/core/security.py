@@ -514,6 +514,36 @@ def get_current_actor(
     )
 
 
+def get_optional_actor(
+    authorization: Optional[str] = Header(default=None, alias="Authorization"),
+    x_actor_id: Optional[str] = Header(default=None, alias="X-Actor-ID"),
+    x_actor_role: Optional[str] = Header(default=None, alias="X-Actor-Role"),
+    x_merchant_id: Optional[str] = Header(default=None, alias="X-Merchant-ID"),
+) -> Optional[AuthenticatedActor]:
+    """
+    Resolves authenticated actor if credentials/tokens are provided,
+    or falls back to demo identity in non-production environments.
+    In production, returns None if no credentials are provided (allowing public storefront and buyer checkout).
+    If invalid or expired credentials are provided, fails closed with 401.
+    """
+    if authorization:
+        return get_current_actor(
+            authorization=authorization,
+            x_actor_id=x_actor_id,
+            x_actor_role=x_actor_role,
+            x_merchant_id=x_merchant_id,
+        )
+    settings = get_settings()
+    if settings.app_env.lower() == "production":
+        return None
+    return get_current_actor(
+        authorization=authorization,
+        x_actor_id=x_actor_id,
+        x_actor_role=x_actor_role,
+        x_merchant_id=x_merchant_id,
+    )
+
+
 def require_demo_operator(
     current_actor: AuthenticatedActor = Depends(get_current_actor),
 ) -> AuthenticatedActor:

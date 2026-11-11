@@ -2,7 +2,7 @@ import datetime
 from decimal import Decimal
 from typing import Optional
 
-from sqlalchemy import DateTime, ForeignKey, Numeric, String, Text
+from sqlalchemy import DateTime, ForeignKey, Index, Numeric, String, Text, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from backend.core.database import Base
@@ -15,6 +15,15 @@ class PaymentCapture(Base):
     """
 
     __tablename__ = "payment_captures"
+    __table_args__ = (
+        Index(
+            "ix_one_completed_capture_per_order",
+            "order_id",
+            unique=True,
+            postgresql_where=text("status = 'COMPLETED'"),
+            sqlite_where=text("status = 'COMPLETED'"),
+        ),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     merchant_id: Mapped[str] = mapped_column(String(100), nullable=False, default="merchant_default", index=True)

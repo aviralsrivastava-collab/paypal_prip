@@ -1,5 +1,6 @@
 from functools import lru_cache
 
+from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -31,12 +32,30 @@ class Settings(BaseSettings):
         return {e.strip().lower() for e in self.allowed_google_email.split(",") if e.strip()}
 
     # PayPal settings (Sandbox strictly enforced)
-    paypal_client_type: str = "mock"
-    paypal_environment: str = "sandbox"
-    paypal_base_url: str = "https://api-m.sandbox.paypal.com"
-    paypal_client_id: str = ""
-    paypal_client_secret: str = ""
-    paypal_webhook_id: str = "WH-MOCK-SANDBOX-001"
+    paypal_client_type: str = Field(
+        default="mock",
+        validation_alias=AliasChoices("paypal_client_type", "paypal_adapter"),
+    )
+    paypal_environment: str = Field(
+        default="sandbox",
+        validation_alias=AliasChoices("paypal_environment", "paypal_mode"),
+    )
+    paypal_base_url: str = Field(
+        default="https://api-m.sandbox.paypal.com",
+        validation_alias=AliasChoices("paypal_base_url", "paypal_api_base_url"),
+    )
+    paypal_client_id: str = Field(
+        default="",
+        validation_alias=AliasChoices("paypal_client_id", "paypal_sandbox_client_id"),
+    )
+    paypal_client_secret: str = Field(
+        default="",
+        validation_alias=AliasChoices("paypal_client_secret", "paypal_sandbox_client_secret"),
+    )
+    paypal_webhook_id: str = Field(
+        default="WH-MOCK-SANDBOX-001",
+        validation_alias=AliasChoices("paypal_webhook_id", "paypal_sandbox_webhook_id"),
+    )
     paypal_client_id_public: str = "sb-client-id-demo"
 
     # Controlled storefront URL allowlist & SSRF guards

@@ -289,14 +289,20 @@ export class ApiClient {
   public static async createOrder(
     sku: string,
     quantity = 1,
+    returnUrl?: string,
+    cancelUrl?: string,
     idempotencyKey?: string
   ): Promise<Order> {
+    const defaultReturn = typeof window !== 'undefined' ? `${window.location.origin}/checkout?status=approved` : undefined;
+    const defaultCancel = typeof window !== 'undefined' ? `${window.location.origin}/checkout?status=cancelled` : undefined;
     const res = await fetch(`${this.baseUrl}/checkout/orders`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         sku,
         quantity,
+        return_url: returnUrl || defaultReturn,
+        cancel_url: cancelUrl || defaultCancel,
         idempotency_key: idempotencyKey || null,
       }),
     });

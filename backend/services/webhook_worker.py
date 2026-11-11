@@ -3,16 +3,20 @@ import json
 import logging
 import random
 import uuid
+from decimal import Decimal
 from typing import Optional
 
 from sqlalchemy.orm import Session
 
 from backend.core.database import atomic_transaction
 from backend.core.metrics import get_metrics_collector
+from backend.models.payment_capture import PaymentCapture
 from backend.models.webhook import WebhookEvent
 from backend.policies.checkout_policy import (
+    CaptureStatus,
     OrderStatus,
     PaymentStatus,
+    ReconciliationStatus,
     ReservationStatus,
     WebhookEventStatus,
 )
@@ -137,6 +141,12 @@ class WebhookWorkerService:
                         order_id_ref = resource.get("supplementary_data", {}).get("related_ids", {}).get("order_id")
                         if order_id_ref:
                             order = self.order_repo.get_by_paypal_order_id(order_id_ref)
+                    if not order:
+                        cap_id = resource.get("id")
+                        if cap_id:
+                            existing_cap = self.capture_repo.get_by_paypal_capture_id(cap_id)
+                            if existing_cap:
+                                order = self.order_repo.get_by_id(existing_cap.order_id)
 
                     if order:
                         resolved_merchant_id = order.merchant_id
@@ -149,6 +159,32 @@ class WebhookWorkerService:
                             reservation = self.reservation_repo.get_by_order_id(order.id)
                             if reservation:
                                 reservation.status = ReservationStatus.COMMITTED.value
+
+                            # Persist PaymentCapture record if not already recorded
+                            existing_capture = self.capture_repo.get_by_order_id(order.id)
+                            if not existing_capture:
+                                capture_id = resource.get("id") or f"CAP-{order.paypal_order_id}"
+                                amt_obj = resource.get("amount", {})
+                                cap_amount = Decimal(amt_obj.get("value", str(order.total_amount)))
+                                cap_currency = amt_obj.get("currency_code", order.currency)
+                                breakdown = resource.get("seller_receivable_breakdown", {})
+                                fee_val = breakdown.get("paypal_fee", {}).get("value")
+                                fee_amount = Decimal(fee_val) if fee_val else None
+                                net_val = breakdown.get("net_amount", {}).get("value")
+                                net_amount = Decimal(net_val) if net_val else None
+
+                                capture_rec = PaymentCapture(
+                                    merchant_id=order.merchant_id,
+                                    order_id=order.id,
+                                    paypal_capture_id=capture_id,
+                                    status=CaptureStatus.COMPLETED.value,
+                                    amount=cap_amount,
+                                    currency=cap_currency,
+                                    fee_amount=fee_amount,
+                                    net_amount=net_amount,
+                                    reconciliation_status=ReconciliationStatus.NOT_NEEDED.value,
+                                )
+                                self.capture_repo.create(capture_rec)
 
                             AuditService.log_event(
                                 self.session,
@@ -170,6 +206,10 @@ class WebhookWorkerService:
                 elif event_type in ("PAYMENT.CAPTURE.DENIED", "PAYMENT.CAPTURE.DECLINED"):
                     custom_id = resource.get("custom_id")
                     order = self.order_repo.get_by_order_id(custom_id) if custom_id else None
+                    if not order:
+                        order_id_ref = resource.get("supplementary_data", {}).get("related_ids", {}).get("order_id")
+                        if order_id_ref:
+                            order = self.order_repo.get_by_paypal_order_id(order_id_ref)
                     if order:
                         resolved_merchant_id = order.merchant_id
                         event.merchant_id = order.merchant_id
@@ -196,6 +236,66 @@ class WebhookWorkerService:
                                     before_state=PaymentStatus.PENDING.value,
                                     after_state=PaymentStatus.FAILED.value,
                                     details=f"Payment declined via webhook for order {order.order_id}.",
+                                ),
+                            )
+
+                elif event_type == "PAYMENT.CAPTURE.PENDING":
+                    custom_id = resource.get("custom_id")
+                    order = self.order_repo.get_by_order_id(custom_id) if custom_id else None
+                    if not order:
+                        order_id_ref = resource.get("supplementary_data", {}).get("related_ids", {}).get("order_id")
+                        if order_id_ref:
+                            order = self.order_repo.get_by_paypal_order_id(order_id_ref)
+                    if order:
+                        resolved_merchant_id = order.merchant_id
+                        event.merchant_id = order.merchant_id
+                        AuditService.log_event(
+                            self.session,
+                            AuditEventCreate(
+                                merchant_id=order.merchant_id,
+                                action="PAYMENT_CAPTURE_PENDING_WEBHOOK",
+                                entity_type="Order",
+                                entity_id=order.order_id,
+                                approval_id=None,
+                                actor_type="PAYPAL_WEBHOOK",
+                                actor_id=event.paypal_event_id,
+                                correlation_id=correlation_id,
+                                before_state=order.payment_status,
+                                after_state=PaymentStatus.PENDING.value,
+                                details=f"Payment capture marked pending via webhook for order {order.order_id}.",
+                            ),
+                        )
+
+                elif event_type in ("CHECKOUT.PAYMENT-APPROVAL.REVERSED", "PAYMENT.AUTHORIZATION.VOIDED"):
+                    custom_id = resource.get("custom_id")
+                    order = self.order_repo.get_by_order_id(custom_id) if custom_id else None
+                    if not order:
+                        order_id_ref = resource.get("id")
+                        if order_id_ref:
+                            order = self.order_repo.get_by_paypal_order_id(order_id_ref)
+                    if order:
+                        resolved_merchant_id = order.merchant_id
+                        event.merchant_id = order.merchant_id
+                        if order.order_status != OrderStatus.COMPLETED.value:
+                            order.order_status = OrderStatus.CANCELLED.value
+                            order.payment_status = PaymentStatus.FAILED.value
+                            reservation = self.reservation_repo.get_by_order_id(order.id)
+                            if reservation:
+                                reservation.status = ReservationStatus.RELEASED.value
+                            AuditService.log_event(
+                                self.session,
+                                AuditEventCreate(
+                                    merchant_id=order.merchant_id,
+                                    action="ORDER_APPROVAL_REVERSED_BY_WEBHOOK",
+                                    entity_type="Order",
+                                    entity_id=order.order_id,
+                                    approval_id=None,
+                                    actor_type="PAYPAL_WEBHOOK",
+                                    actor_id=event.paypal_event_id,
+                                    correlation_id=correlation_id,
+                                    before_state=order.order_status,
+                                    after_state=OrderStatus.CANCELLED.value,
+                                    details=f"Payment approval reversed via webhook for order {order.order_id}.",
                                 ),
                             )
 

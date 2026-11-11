@@ -143,7 +143,24 @@ def root():
         "status": "online",
         "docs_url": "/docs",
         "health_url": "/api/health",
+        "webhook_url": "/api/webhooks/paypal",
     }
+
+
+@app.post("/", tags=["Root"])
+def root_post():
+    """
+    Diagnostic handler for webhooks mistakenly sent to the root URL.
+    Returns HTTP 400 with actionable instructions to register '/api/webhooks/paypal'.
+    """
+    return JSONResponse(
+        status_code=status.HTTP_400_BAD_REQUEST,
+        content={
+            "error": "INCORRECT_WEBHOOK_URL",
+            "message": "PayPal webhook notifications must be delivered to '/api/webhooks/paypal', not root '/'.",
+            "registered_webhook_endpoint": "/api/webhooks/paypal",
+        },
+    )
 
 
 @app.on_event("startup")
