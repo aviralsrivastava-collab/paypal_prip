@@ -50,6 +50,12 @@ class Settings(BaseSettings):
             origins.append(self.controlled_storefront_base_url)
         return origins
 
+    def is_allowed_cors_origin(self, origin: str) -> bool:
+        """Validates incoming Origin header with strict hostname, scheme, and port comparison."""
+        from backend.core.security import is_allowed_origin
+
+        return is_allowed_origin(origin, self.cors_origins_list)
+
     # AI Diagnostic settings (strictly advisory)
     ai_provider: str = "mock"
     ai_model: str = "prip-diagnostic-v1"

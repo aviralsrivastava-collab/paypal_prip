@@ -409,8 +409,75 @@ class TestBackendAuthorizationAndTenantSecurity:
         assert "Production authentication token required" in exc_info.value.detail
 
     def test_cors_preflight_on_fastapi_backend(self):
-        """Settings explicitly authorize Vercel frontend without wildcards."""
+        """Settings explicitly authorize Vercel frontend without wildcards using strict origin validation."""
+        from backend.core.security import is_allowed_origin
+
         settings = get_settings()
-        assert "https://paypalprip.vercel.app" in settings.cors_origins_list
-        assert "*" not in settings.cors_origins_list
-# ok
+        assert is_allowed_origin("https://paypalprip.vercel.app", settings.cors_origins_list)
+        assert not is_allowed_origin("*", settings.cors_origins_list)
+
+
+class TestStrictUrlOriginValidation:
+    """
+    Regression test suite for strict URL/Origin validation.
+    Prevents CodeQL Incomplete URL Substring Sanitization (CWE-20 / CWE-697).
+    """
+
+    def test_legitimate_origins_authorized(self):
+        from backend.core.security import is_allowed_origin
+
+        settings = get_settings()
+        assert is_allowed_origin("https://paypalprip.vercel.app", settings.cors_origins_list)
+        assert is_allowed_origin("http://localhost:3000", settings.cors_origins_list)
+        assert is_allowed_origin("http://localhost:5173", settings.cors_origins_list)
+
+    def test_hostname_suffix_attacks_rejected(self):
+        from backend.core.security import is_allowed_origin
+
+        settings = get_settings()
+        assert not is_allowed_origin("https://paypalprip.vercel.app.attacker.com", settings.cors_origins_list)
+        assert not is_allowed_origin("https://paypalprip.vercel.app.evil.org", settings.cors_origins_list)
+        assert not is_allowed_origin("https://paypalprip.vercel.app-attacker.com", settings.cors_origins_list)
+
+    def test_subdomain_prefix_and_typosquat_attacks_rejected(self):
+        from backend.core.security import is_allowed_origin
+
+        settings = get_settings()
+        assert not is_allowed_origin("https://evilpaypalprip.vercel.app", settings.cors_origins_list)
+        assert not is_allowed_origin("https://attacker-paypalprip.vercel.app", settings.cors_origins_list)
+        assert not is_allowed_origin("https://paypalprip.attacker.app", settings.cors_origins_list)
+
+    def test_embedded_trusted_domains_in_path_or_query_rejected(self):
+        from backend.core.security import is_allowed_origin
+
+        settings = get_settings()
+        assert not is_allowed_origin("https://attacker.com/paypalprip.vercel.app", settings.cors_origins_list)
+        assert not is_allowed_origin("https://attacker.com?url=https://paypalprip.vercel.app", settings.cors_origins_list)
+        assert not is_allowed_origin("https://attacker.com#https://paypalprip.vercel.app", settings.cors_origins_list)
+
+    def test_scheme_downgrade_and_invalid_schemes_rejected(self):
+        from backend.core.security import is_allowed_origin
+
+        settings = get_settings()
+        assert not is_allowed_origin("http://paypalprip.vercel.app", settings.cors_origins_list)
+        assert not is_allowed_origin("javascript:alert(1)", settings.cors_origins_list)
+        assert not is_allowed_origin("data:text/html,<html>", settings.cors_origins_list)
+        assert not is_allowed_origin("ftp://paypalprip.vercel.app", settings.cors_origins_list)
+
+    def test_userinfo_and_port_spoofing_rejected(self):
+        from backend.core.security import is_allowed_origin
+
+        settings = get_settings()
+        assert not is_allowed_origin("https://admin:pass@paypalprip.vercel.app", settings.cors_origins_list)
+        assert not is_allowed_origin("https://paypalprip.vercel.app:8080", settings.cors_origins_list)
+        assert not is_allowed_origin("http://localhost:9999", settings.cors_origins_list)
+
+    def test_malformed_and_empty_inputs_rejected(self):
+        from backend.core.security import is_allowed_origin
+
+        settings = get_settings()
+        assert not is_allowed_origin("", settings.cors_origins_list)
+        assert not is_allowed_origin("   ", settings.cors_origins_list)
+        assert not is_allowed_origin("not-a-valid-url", settings.cors_origins_list)
+        assert not is_allowed_origin(None, settings.cors_origins_list)  # type: ignore
+

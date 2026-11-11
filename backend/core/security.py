@@ -1,6 +1,6 @@
 import base64
 import logging
-from typing import Any, Dict, Optional, Tuple, cast
+from typing import Any, Dict, Optional, Sequence, Tuple, cast
 from urllib.parse import urlparse
 
 import jwt
@@ -15,6 +15,75 @@ from backend.core.config import get_settings
 logger = logging.getLogger(__name__)
 
 RESERVED_SYSTEM_TENANTS = {"QUARANTINED_ORPHAN", "platform_system", "platform"}
+
+
+def is_allowed_origin(origin: Optional[str], allowed_origins: Sequence[str]) -> bool:
+    """
+    Cryptographically safe, strict URL/origin validation.
+    Replaces unsafe substring or suffix matching to prevent:
+    - Hostname suffix attacks: e.g. https://paypalprip.vercel.app.attacker.com
+    - Subdomain prefix attacks: e.g. https://attackerpaypalprip.vercel.app
+    - Embedded trusted domains: e.g. https://attacker.com/paypalprip.vercel.app or ?url=...
+    - Scheme downgrade attacks: e.g. http://paypalprip.vercel.app when https is required
+    - Userinfo / port spoofing / path injection
+    """
+    if not origin or not isinstance(origin, str):
+        return False
+
+    raw_origin = origin.strip()
+    if not raw_origin:
+        return False
+
+    try:
+        parsed = urlparse(raw_origin)
+    except Exception:
+        return False
+
+    # Origin must specify an allowed scheme (http for local dev, https for production)
+    if parsed.scheme not in ("http", "https"):
+        return False
+
+    # Origin must have a valid hostname and netloc
+    if not parsed.hostname or not parsed.netloc:
+        return False
+
+    # An Origin header must not contain a path (except empty or '/'), query, or fragment
+    if parsed.path not in ("", "/") or parsed.query or parsed.fragment:
+        return False
+
+    # Origin must not contain userinfo (username:password@)
+    if parsed.username or parsed.password:
+        return False
+
+    incoming_scheme = parsed.scheme.lower()
+    incoming_hostname = parsed.hostname.lower()
+    incoming_port = parsed.port or (443 if incoming_scheme == "https" else 80)
+
+    for candidate in allowed_origins:
+        if not candidate or not isinstance(candidate, str):
+            continue
+        cand_trimmed = candidate.strip()
+        if not cand_trimmed:
+            continue
+
+        try:
+            cand_parsed = urlparse(cand_trimmed)
+        except Exception:
+            continue
+
+        cand_scheme = cand_parsed.scheme.lower() if cand_parsed.scheme else ""
+        cand_hostname = cand_parsed.hostname.lower() if cand_parsed.hostname else ""
+        cand_port = cand_parsed.port or (443 if cand_scheme == "https" else 80)
+
+        # Exact matching of scheme, exact hostname, and exact port
+        if (
+            incoming_scheme == cand_scheme
+            and incoming_hostname == cand_hostname
+            and incoming_port == cand_port
+        ):
+            return True
+
+    return False
 
 
 class AuthenticatedActor(BaseModel):

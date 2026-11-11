@@ -20,10 +20,8 @@ import {
 } from '../types';
 
 export class ApiClient {
-  private static getBaseUrl(): string {
-    const envUrl =
-      (import.meta as any).env?.VITE_API_URL ||
-      (typeof process !== 'undefined' ? (process as any).env?.VITE_API_URL : undefined);
+  public static getBaseUrl(): string {
+    const envUrl = import.meta.env.VITE_API_URL;
     if (envUrl && typeof envUrl === 'string') {
       const clean = envUrl.trim().replace(/\/+$/, '');
       if (!clean) return '/api';
@@ -32,7 +30,9 @@ export class ApiClient {
     return '/api';
   }
 
-  private static baseUrl = ApiClient.getBaseUrl();
+  private static get baseUrl(): string {
+    return ApiClient.getBaseUrl();
+  }
 
   public static async getHealth(): Promise<HealthStatus> {
     const res = await fetch(`${this.baseUrl}/health`);
