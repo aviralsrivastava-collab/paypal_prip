@@ -126,11 +126,17 @@ class CheckoutService:
 
         # 3. Call PayPal Orders v2 external REST endpoint OUTSIDE database transaction
         # Propagate stable PayPal-Request-Id for order creation idempotency
+        # Enforce PayPal AI Hackathon currency standard (canonical USD default)
+        valid_paypal_currencies = {"USD", "EUR", "GBP", "CAD", "AUD"}
+        target_currency = (catalog_product.currency or "USD").upper().strip()
+        if target_currency not in valid_paypal_currencies:
+            target_currency = "USD"
+
         paypal_request_id = request.idempotency_key or local_order_id
         paypal_order = self.paypal_client.create_order(
             sku=request.sku,
             amount=total_amount,
-            currency=catalog_product.currency,
+            currency=target_currency,
             reference_id=local_order_id,
             return_url=request.return_url,
             cancel_url=request.cancel_url,
@@ -150,7 +156,7 @@ class CheckoutService:
                 sku=request.sku,
                 product_id=catalog_product.id,
                 unit_price=catalog_product.price,
-                currency=catalog_product.currency,
+                currency=target_currency,
                 quantity=request.quantity,
                 total_amount=total_amount,
                 order_status=OrderStatus.CREATED.value,

@@ -101,11 +101,17 @@ class PayPalSandboxClient(PayPalClientInterface):
         payee_merchant_id: Optional[str] = None,
     ) -> PayPalOrderResponse:
         url = f"{self.base_url}/v2/checkout/orders"
+        # Enforce PayPal AI Hackathon currency specification (canonical USD default)
+        valid_paypal_currencies = {"USD", "EUR", "GBP", "CAD", "AUD"}
+        canonical_currency = (currency or "USD").upper().strip()
+        if canonical_currency not in valid_paypal_currencies:
+            canonical_currency = "USD"
+
         purchase_unit: Dict[str, Any] = {
             "reference_id": reference_id,
             "custom_id": sku,
             "amount": {
-                "currency_code": currency,
+                "currency_code": canonical_currency,
                 "value": f"{amount:.2f}",
             },
         }
