@@ -184,6 +184,43 @@ export const Checkout: React.FC = () => {
         </p>
       </div>
 
+      {/* Sandbox Login Credentials Helper */}
+      <div
+        style={{
+          padding: '1rem',
+          backgroundColor: '#eff6ff',
+          border: '1px solid #bfdbfe',
+          borderRadius: '6px',
+          marginBottom: '1.5rem',
+          fontSize: '0.9rem',
+          color: '#1e3a8a',
+        }}
+      >
+        <strong style={{ display: 'block', marginBottom: '0.4rem' }}>
+          💡 Important: How to Log Into PayPal Sandbox Without Currency Errors
+        </strong>
+        <p style={{ margin: '0 0 0.5rem', lineHeight: 1.4 }}>
+          If PayPal displays <em>"This seller doesn't accept payments in your currency"</em>, it means you logged into PayPal with an Indian/non-USD buyer account or your personal live PayPal account.
+        </p>
+        <ul style={{ margin: 0, paddingLeft: '1.2rem', lineHeight: 1.5, color: '#1e40af' }}>
+          <li>
+            <strong>Use a US Sandbox Buyer Account:</strong> Go to{' '}
+            <a
+              href="https://developer.paypal.com/dashboard/accounts"
+              target="_blank"
+              rel="noreferrer"
+              style={{ color: '#2563eb', fontWeight: 600, textDecoration: 'underline' }}
+            >
+              PayPal Developer &gt; Sandbox Accounts
+            </a>
+            , select/create a <strong>Personal (US)</strong> account, and log in with its generated <code>sb-...@personal.example.com</code> email and password.
+          </li>
+          <li>
+            <strong>Live credentials are rejected:</strong> Never enter your real personal PayPal account on sandbox checkout.
+          </li>
+        </ul>
+      </div>
+
       {cancelNotice && (
         <div
           role="status"
