@@ -149,3 +149,4 @@ describe('Dashboard Page Component', () => {
     expect(ApiClient.getAuthToken()).toBe('eyMockToken123');
   });
 });
+
