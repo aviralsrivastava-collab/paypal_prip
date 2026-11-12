@@ -102,7 +102,11 @@ class Settings(BaseSettings):
     rate_limit_sensitive_burst: int = 10  # burst allowance for sensitive routes
     trusted_proxies: str = "127.0.0.1,::1,localhost,testclient,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16"
 
-    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
+    model_config = SettingsConfigDict(
+        env_file=(".env", "paypal_prip/.env"),
+        env_file_encoding="utf-8",
+        extra="ignore",
+    )
 
     def validate_production_settings(self) -> None:
         """
