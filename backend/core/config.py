@@ -57,6 +57,10 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("paypal_webhook_id", "paypal_sandbox_webhook_id"),
     )
     paypal_client_id_public: str = "sb-client-id-demo"
+    paypal_enable_payee_routing: bool = Field(
+        default=False,
+        description="Whether custom payee routing is enabled (requires PayPal Partner permissions). Defaults to False.",
+    )
 
     # Controlled storefront URL allowlist & SSRF guards
     controlled_storefront_base_url: str = "http://localhost:3000"

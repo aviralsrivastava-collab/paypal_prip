@@ -40,3 +40,7 @@ class ProductRepository:
         self.session.add(product)
         self.session.flush()
         return product
+
+    def delete(self, product: Product) -> None:
+        self.session.delete(product)
+        self.session.flush()

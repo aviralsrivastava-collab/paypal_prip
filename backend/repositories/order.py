@@ -48,3 +48,10 @@ class OrderRepository:
             stmt = stmt.where(Order.merchant_id == merchant_id)
         stmt = stmt.order_by(Order.created_at.desc()).limit(limit)
         return self.session.execute(stmt).scalars().all()
+
+    def get_all(self, merchant_id: Optional[str] = None) -> Sequence[Order]:
+        stmt = select(Order)
+        if merchant_id is not None:
+            stmt = stmt.where(Order.merchant_id == merchant_id)
+        stmt = stmt.order_by(Order.id.asc())
+        return self.session.execute(stmt).scalars().all()

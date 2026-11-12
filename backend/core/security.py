@@ -94,8 +94,10 @@ class AuthenticatedActor(BaseModel):
 
     actor_id: str
     actor_type: str = "merchant"  # "merchant", "demo_operator", "system"
-    role: str = "merchant_operator"  # "merchant_admin", "demo_operator", "ordinary_user", "superadmin"
+    role: str = "merchant_operator"  # "OWNER", "ADMIN", "MANAGER", "VIEWER", "merchant_admin", "demo_operator", "ordinary_user", "superadmin"
     merchant_id: str = "merchant_default"
+    user_id: Optional[str] = None
+    email: Optional[str] = None
     is_authenticated: bool = True
 
 
@@ -450,9 +452,9 @@ def get_current_actor(
                 or claims.get("org_id")
                 or claims.get("tenant_id")
             )
-            # In production, missing merchant_id was rejected in verify_oidc_token
-            resolved_merchant_id = str(merchant_id_claim or "merchant_default")
+            resolved_merchant_id = str(merchant_id_claim or merchant_id_str or "merchant_default")
             role = str(claims.get("role", "merchant_operator"))
+            email = claims.get("email")
 
             if resolved_merchant_id in RESERVED_SYSTEM_TENANTS and role not in {"system_admin", "superadmin", "system"}:
                 raise HTTPException(
@@ -465,6 +467,8 @@ def get_current_actor(
                 actor_type=str(claims.get("actor_type", "merchant")),
                 role=role,
                 merchant_id=resolved_merchant_id,
+                user_id=str(claims.get("user_id")) if claims.get("user_id") else None,
+                email=str(email) if email else None,
                 is_authenticated=True,
             )
         else:
@@ -589,3 +593,37 @@ def require_merchant_access(
             status_code=status.HTTP_403_FORBIDDEN,
             detail=f"Forbidden: Actor from merchant '{current_actor.merchant_id}' is not authorized to access or mutate merchant '{target_merchant_id}' resources.",
         )
+
+
+ROLE_LEVELS: Dict[str, int] = {
+    "VIEWER": 10,
+    "MANAGER": 20,
+    "ADMIN": 30,
+    "OWNER": 40,
+    "superadmin": 100,
+    "system": 100,
+    "ordinary_user": 10,
+    "merchant_operator": 20,
+    "demo_operator": 30,
+    "merchant_admin": 40,
+    "system_admin": 100,
+}
+
+
+def require_role(min_role: str):
+    """
+    Authorization dependency verifying the actor has at least the specified role level.
+    Hierarchy: VIEWER (10) < MANAGER (20) < ADMIN (30) < OWNER (40) < superadmin (100).
+    """
+    min_level = ROLE_LEVELS.get(min_role.upper(), ROLE_LEVELS.get(min_role, 20))
+
+    def _role_checker(actor: AuthenticatedActor = Depends(get_current_actor)) -> AuthenticatedActor:
+        actor_level = ROLE_LEVELS.get(actor.role.upper(), ROLE_LEVELS.get(actor.role, 0))
+        if actor_level < min_level:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Forbidden: Action requires at least '{min_role}' role (actor possesses '{actor.role}').",
+            )
+        return actor
+
+    return _role_checker

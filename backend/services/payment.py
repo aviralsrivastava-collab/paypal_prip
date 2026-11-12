@@ -300,6 +300,22 @@ class PaymentService:
                     # Concurrent request already successfully completed capture
                     capture = existing_completed_capture
                 elif is_completed:
+                    # Explicit invariant verification: amount and currency must match local order
+                    if (
+                        paypal_capture.amount != curr_order.total_amount
+                        or paypal_capture.currency != curr_order.currency
+                    ):
+                        logger.error(
+                            "Capture invariant mismatch for order %s: expected %s %s, got %s %s",
+                            curr_order.order_id,
+                            curr_order.currency,
+                            curr_order.total_amount,
+                            paypal_capture.currency,
+                            paypal_capture.amount,
+                        )
+                        is_completed = False
+
+                if is_completed and curr_order.payment_status != PaymentStatus.CAPTURED.value:
                     curr_order.payment_status = PaymentStatus.CAPTURED.value
                     curr_order.order_status = OrderStatus.COMPLETED.value
 
@@ -357,23 +373,34 @@ class PaymentService:
                     curr_order.payment_status = PaymentStatus.FAILED.value
                     curr_order.order_status = OrderStatus.FAILED.value
 
+                    failure_status = (
+                        CaptureStatus.FAILED.value
+                        if paypal_capture.status == "COMPLETED"
+                        else paypal_capture.status
+                    )
+                    failure_msg = (
+                        "Capture rejected: amount or currency mismatch with order total"
+                        if paypal_capture.status == "COMPLETED"
+                        else f"Capture returned non-completed status: {paypal_capture.status}"
+                    )
+
                     existing_capture = self.capture_repo.get_by_order_id(curr_order.id)
                     if not existing_capture:
                         capture = PaymentCapture(
                             merchant_id=curr_order.merchant_id,
                             order_id=curr_order.id,
                             paypal_capture_id=paypal_capture.paypal_capture_id,
-                            status=paypal_capture.status,
+                            status=failure_status,
                             amount=paypal_capture.amount,
                             currency=paypal_capture.currency,
-                            error_message=f"Capture returned non-completed status: {paypal_capture.status}",
+                            error_message=failure_msg,
                             reconciliation_status=ReconciliationStatus.NOT_NEEDED.value,
                         )
                         self.capture_repo.create(capture)
                     else:
                         capture = existing_capture
-                        capture.status = paypal_capture.status
-                        capture.error_message = f"Capture returned non-completed status: {paypal_capture.status}"
+                        capture.status = failure_status
+                        capture.error_message = failure_msg
 
                     AuditService.log_event(
                         self.session,

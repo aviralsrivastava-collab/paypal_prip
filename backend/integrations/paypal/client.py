@@ -98,20 +98,23 @@ class PayPalSandboxClient(PayPalClientInterface):
         return_url: Optional[str] = None,
         cancel_url: Optional[str] = None,
         paypal_request_id: Optional[str] = None,
+        payee_merchant_id: Optional[str] = None,
     ) -> PayPalOrderResponse:
         url = f"{self.base_url}/v2/checkout/orders"
+        purchase_unit: Dict[str, Any] = {
+            "reference_id": reference_id,
+            "custom_id": sku,
+            "amount": {
+                "currency_code": currency,
+                "value": f"{amount:.2f}",
+            },
+        }
+        if payee_merchant_id:
+            purchase_unit["payee"] = {"merchant_id": payee_merchant_id}
+
         payload: Dict[str, Any] = {
             "intent": "CAPTURE",
-            "purchase_units": [
-                {
-                    "reference_id": reference_id,
-                    "custom_id": sku,
-                    "amount": {
-                        "currency_code": currency,
-                        "value": f"{amount:.2f}",
-                    },
-                }
-            ],
+            "purchase_units": [purchase_unit],
         }
         if return_url and cancel_url:
             payload["application_context"] = {

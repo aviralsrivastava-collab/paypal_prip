@@ -22,6 +22,8 @@ from fastapi.responses import JSONResponse
 
 # Ensure models are imported so Base metadata is populated
 import backend.models  # noqa: F401
+from backend.api.auth import router as auth_router
+from backend.api.chat import router as ai_router
 from backend.api.checkout import router as checkout_router
 from backend.api.corrections import router as corrections_router
 from backend.api.diagnoses import router as diagnoses_router
@@ -125,6 +127,8 @@ app.add_middleware(
 
 # Include API routers
 app.include_router(health_router, prefix="/api")
+app.include_router(auth_router)
+app.include_router(ai_router)
 app.include_router(products_router)
 app.include_router(storefront_router)
 app.include_router(scans_router)

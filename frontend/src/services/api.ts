@@ -17,6 +17,13 @@ import {
   WebhookEvent,
   WorkerHeartbeat,
   OperationsOverview,
+  UserProfile,
+  MerchantWorkspace,
+  Membership,
+  CatalogIntelligence,
+  RevenueIntelligence,
+  ChatMessage,
+  ChatResponse,
 } from '../types';
 
 export class ApiClient {
@@ -442,6 +449,208 @@ export class ApiClient {
     });
     if (!res.ok) {
       throw new Error(`Failed to trigger worker tick: ${res.status}`);
+    }
+    return res.json();
+  }
+
+  // --- Multi-Tenant & Identity Methods ---
+  public static getActiveMerchantId(): string | null {
+    return localStorage.getItem('prip_active_merchant_id');
+  }
+
+  public static setActiveMerchantId(merchantId: string | null): void {
+    if (merchantId) {
+      localStorage.setItem('prip_active_merchant_id', merchantId);
+    } else {
+      localStorage.removeItem('prip_active_merchant_id');
+    }
+  }
+
+  public static getAuthHeaders(): Record<string, string> {
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+    };
+    const activeMerchant = this.getActiveMerchantId();
+    if (activeMerchant) {
+      headers['X-Merchant-ID'] = activeMerchant;
+    }
+    return headers;
+  }
+
+  public static async getProfile(): Promise<UserProfile> {
+    const res = await fetch(`${this.baseUrl}/auth/me`, {
+      headers: this.getAuthHeaders(),
+    });
+    if (!res.ok) {
+      throw new Error(`Failed to fetch user profile: ${res.status}`);
+    }
+    return res.json();
+  }
+
+  public static async createWorkspace(name: string, slug: string): Promise<MerchantWorkspace> {
+    const res = await fetch(`${this.baseUrl}/auth/merchants`, {
+      method: 'POST',
+      headers: this.getAuthHeaders(),
+      body: JSON.stringify({ name, slug }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || `Failed to create merchant workspace: ${res.status}`);
+    }
+    return res.json();
+  }
+
+  public static async switchTenant(merchantId: string): Promise<{ active_merchant_id: string; active_merchant_name: string; active_role: string }> {
+    const res = await fetch(`${this.baseUrl}/auth/switch-tenant`, {
+      method: 'POST',
+      headers: this.getAuthHeaders(),
+      body: JSON.stringify({ merchant_id: merchantId }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || `Failed to switch workspace: ${res.status}`);
+    }
+    const data = await res.json();
+    this.setActiveMerchantId(data.active_merchant_id);
+    return data;
+  }
+
+  public static async getMembers(): Promise<Membership[]> {
+    const res = await fetch(`${this.baseUrl}/auth/members`, {
+      headers: this.getAuthHeaders(),
+    });
+    if (!res.ok) {
+      throw new Error(`Failed to fetch members: ${res.status}`);
+    }
+    return res.json();
+  }
+
+  public static async inviteMember(email: string, role: string): Promise<Membership> {
+    const res = await fetch(`${this.baseUrl}/auth/members`, {
+      method: 'POST',
+      headers: this.getAuthHeaders(),
+      body: JSON.stringify({ email, role }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || `Failed to invite member: ${res.status}`);
+    }
+    return res.json();
+  }
+
+  public static async removeMember(userId: string): Promise<void> {
+    const res = await fetch(`${this.baseUrl}/auth/members/${encodeURIComponent(userId)}`, {
+      method: 'DELETE',
+      headers: this.getAuthHeaders(),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || `Failed to remove member: ${res.status}`);
+    }
+  }
+
+  // --- Catalog CRUD Methods ---
+  public static async createProduct(product: {
+    sku: string;
+    title: string;
+    price: number | string;
+    currency?: string;
+    description?: string;
+    storefront_price?: number | string;
+  }): Promise<ProductComparison> {
+    const res = await fetch(`${this.baseUrl}/products`, {
+      method: 'POST',
+      headers: this.getAuthHeaders(),
+      body: JSON.stringify({
+        sku: product.sku,
+        title: product.title,
+        price: product.price,
+        currency: product.currency || 'USD',
+        description: product.description || null,
+        storefront_price: product.storefront_price || null,
+      }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || `Failed to create product: ${res.status}`);
+    }
+    return res.json();
+  }
+
+  public static async updateProduct(
+    id: number,
+    product: { title?: string; description?: string; price?: number | string; currency?: string }
+  ): Promise<ProductComparison> {
+    const res = await fetch(`${this.baseUrl}/products/${id}`, {
+      method: 'PUT',
+      headers: this.getAuthHeaders(),
+      body: JSON.stringify(product),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || `Failed to update product: ${res.status}`);
+    }
+    return res.json();
+  }
+
+  public static async deleteProduct(id: number): Promise<void> {
+    const res = await fetch(`${this.baseUrl}/products/${id}`, {
+      method: 'DELETE',
+      headers: this.getAuthHeaders(),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || `Failed to delete product: ${res.status}`);
+    }
+  }
+
+  public static async updateStorefrontPrice(
+    sku: string,
+    price: number | string,
+    currency = 'USD'
+  ): Promise<ProductComparison> {
+    const res = await fetch(`${this.baseUrl}/products/sku/${encodeURIComponent(sku)}/storefront-price`, {
+      method: 'PUT',
+      headers: this.getAuthHeaders(),
+      body: JSON.stringify({ price, currency }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || `Failed to update storefront price: ${res.status}`);
+    }
+    return res.json();
+  }
+
+  // --- AI Intelligence & Assistant Methods ---
+  public static async getCatalogIntelligence(): Promise<CatalogIntelligence> {
+    const res = await fetch(`${this.baseUrl}/ai/catalog-intelligence`, {
+      headers: this.getAuthHeaders(),
+    });
+    if (!res.ok) {
+      throw new Error(`Failed to fetch catalog intelligence: ${res.status}`);
+    }
+    return res.json();
+  }
+
+  public static async getRevenueIntelligence(): Promise<RevenueIntelligence> {
+    const res = await fetch(`${this.baseUrl}/ai/revenue-intelligence`, {
+      headers: this.getAuthHeaders(),
+    });
+    if (!res.ok) {
+      throw new Error(`Failed to fetch revenue intelligence: ${res.status}`);
+    }
+    return res.json();
+  }
+
+  public static async sendChatMessage(messages: ChatMessage[]): Promise<ChatResponse> {
+    const res = await fetch(`${this.baseUrl}/ai/chat`, {
+      method: 'POST',
+      headers: this.getAuthHeaders(),
+      body: JSON.stringify({ messages }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || `Chat request failed: ${res.status}`);
     }
     return res.json();
   }

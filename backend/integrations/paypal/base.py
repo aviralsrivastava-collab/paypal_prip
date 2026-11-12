@@ -85,8 +85,9 @@ class PayPalClientInterface(ABC):
         return_url: Optional[str] = None,
         cancel_url: Optional[str] = None,
         paypal_request_id: Optional[str] = None,
+        payee_merchant_id: Optional[str] = None,
     ) -> PayPalOrderResponse:
-        """Create a PayPal order (intent: CAPTURE). Supports PayPal-Request-Id header."""
+        """Create a PayPal order (intent: CAPTURE). Supports PayPal-Request-Id header and payee routing."""
         pass
 
     @abstractmethod

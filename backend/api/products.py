@@ -1,5 +1,4 @@
 from typing import Any, Dict, List, Optional
-
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
@@ -9,8 +8,15 @@ from backend.core.security import (
     get_optional_actor,
     require_demo_operator,
     require_merchant_access,
+    require_role,
 )
-from backend.schemas.product import ProductComparisonResponse, ProductResponse
+from backend.schemas.product import (
+    ProductComparisonResponse,
+    ProductCreate,
+    ProductResponse,
+    ProductUpdate,
+    StorefrontPriceUpdate,
+)
 from backend.services.catalog import CatalogService
 
 router = APIRouter(prefix="/api/products", tags=["Catalog Products"])
@@ -72,6 +78,113 @@ def get_product_by_sku(
             detail=f"Product with SKU '{sku}' not found.",
         )
     return product
+
+
+@router.post("", response_model=ProductResponse, status_code=status.HTTP_201_CREATED, summary="Create catalog product")
+def create_product(
+    request: ProductCreate,
+    actor: AuthenticatedActor = Depends(require_role("MANAGER")),
+    db: Session = Depends(get_db),
+) -> ProductResponse:
+    """
+    Creates a new merchant-authorized product in the tenant's catalog and initializes
+    a matching storefront product for controlled comparison.
+    Requires at least MANAGER role.
+    """
+    service = CatalogService(db)
+    try:
+        return service.create_product(
+            merchant_id=actor.merchant_id,
+            sku=request.sku,
+            title=request.title,
+            price=request.price,
+            currency=request.currency,
+            description=request.description,
+            availability=request.availability,
+            storefront_price=request.storefront_price,
+            actor_id=actor.actor_id,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e))
+
+
+@router.put("/{product_id}", response_model=ProductResponse, summary="Update catalog product")
+def update_product(
+    product_id: int,
+    request: ProductUpdate,
+    actor: AuthenticatedActor = Depends(require_role("MANAGER")),
+    db: Session = Depends(get_db),
+) -> ProductResponse:
+    """
+    Updates catalog product details (title, description, price, currency, availability)
+    and increments the source version.
+    Requires at least MANAGER role.
+    """
+    service = CatalogService(db)
+    try:
+        return service.update_product(
+            product_id=product_id,
+            merchant_id=actor.merchant_id,
+            title=request.title,
+            description=request.description,
+            price=request.price,
+            currency=request.currency,
+            availability=request.availability,
+            actor_id=actor.actor_id,
+        )
+    except KeyError:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Product with ID {product_id} not found.")
+    except PermissionError as e:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(e))
+
+
+@router.delete("/{product_id}", status_code=status.HTTP_204_NO_CONTENT, summary="Delete catalog product")
+def delete_product(
+    product_id: int,
+    actor: AuthenticatedActor = Depends(require_role("ADMIN")),
+    db: Session = Depends(get_db),
+) -> None:
+    """
+    Deletes a catalog product from the tenant catalog.
+    Requires at least ADMIN role.
+    """
+    service = CatalogService(db)
+    try:
+        service.delete_product(
+            product_id=product_id,
+            merchant_id=actor.merchant_id,
+            actor_id=actor.actor_id,
+        )
+    except KeyError:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Product with ID {product_id} not found.")
+    except PermissionError as e:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(e))
+
+
+@router.put("/sku/{sku}/storefront-price", response_model=ProductComparisonResponse, summary="Simulate/update storefront price")
+def update_storefront_price(
+    sku: str,
+    request: StorefrontPriceUpdate,
+    actor: AuthenticatedActor = Depends(require_role("MANAGER")),
+    db: Session = Depends(get_db),
+) -> ProductComparisonResponse:
+    """
+    Updates the controlled storefront price for a given SKU to simulate or test price discrepancies.
+    Requires at least MANAGER role.
+    """
+    service = CatalogService(db)
+    try:
+        return service.set_storefront_price(
+            sku=sku,
+            merchant_id=actor.merchant_id,
+            new_price=request.price,
+            currency=request.currency,
+            actor_id=actor.actor_id,
+        )
+    except KeyError:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Storefront product with SKU '{sku}' not found.")
+    except PermissionError as e:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(e))
 
 
 @router.post("/seed", response_model=Dict[str, Any], summary="Seed demo catalog and storefront")

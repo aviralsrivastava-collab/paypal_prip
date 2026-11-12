@@ -408,6 +408,7 @@ def test_oidc_asymmetric_jwks_verification_and_production_enforcement(monkeypatc
     settings = get_settings()
     monkeypatch.setattr(settings, "app_env", "production")
     monkeypatch.setattr(settings, "oidc_issuer", "https://auth.prip.example.com")
+    monkeypatch.setattr(settings, "oidc_jwks_url", "https://auth.prip.example.com/certs")
     monkeypatch.setattr(settings, "oidc_client_id", "prip-service-app")
 
     priv_pem, pub_pem = generate_test_rsa_key_pair()

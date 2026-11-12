@@ -8,6 +8,7 @@ from backend.integrations.ai.base import (
 )
 from backend.integrations.ai.context import DiagnosisPromptContext
 from backend.integrations.ai.factory import get_ai_provider
+from backend.integrations.ai.gemini_provider import GeminiAIProvider
 from backend.integrations.ai.mock_provider import MockAIProvider
 
 __all__ = [
@@ -18,6 +19,7 @@ __all__ = [
     "AIProviderOutageError",
     "AIStructuredOutputError",
     "DiagnosisPromptContext",
+    "GeminiAIProvider",
     "MockAIProvider",
     "get_ai_provider",
 ]

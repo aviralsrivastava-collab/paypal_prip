@@ -295,3 +295,74 @@ export interface OperationsOverview {
   recent_reconciliations: ReconciliationRecord[];
   stuck_webhooks: StuckWebhookEvent[];
 }
+
+export interface Membership {
+  id: string;
+  merchant_id: string;
+  merchant_name: string;
+  merchant_slug: string;
+  user_id: string;
+  user_email?: string | null;
+  role: string;
+  is_active: boolean;
+  created_at: string;
+}
+
+export interface UserProfile {
+  id: string;
+  email: string;
+  full_name?: string | null;
+  active_merchant_id: string;
+  active_role: string;
+  memberships: Membership[];
+}
+
+export interface MerchantWorkspace {
+  id: string;
+  slug: string;
+  name: string;
+  status: string;
+  currency: string;
+  created_at: string;
+}
+
+export interface CatalogIntelligence {
+  total_products: number;
+  health_index: number;
+  items_complete: number;
+  items_needing_improvement: number;
+  products_analysis: Array<{
+    sku: string;
+    product_id: number;
+    quality_score: number;
+    is_complete: boolean;
+    normalized_title: string;
+    suggested_category: string;
+    current_price: string;
+    currency: string;
+    recommendations: string[];
+  }>;
+}
+
+export interface RevenueIntelligence {
+  merchant_id: string;
+  currency: string;
+  total_products_monitored: number;
+  active_discrepancies: number;
+  integrity_score_pct: number;
+  at_risk_revenue_leakage: string;
+  verified_captured_volume: string;
+  total_orders_processed: number;
+  completed_captured_orders: number;
+  protection_status: string;
+}
+
+export interface ChatMessage {
+  role: 'user' | 'assistant' | 'system';
+  content: string;
+}
+
+export interface ChatResponse {
+  reply: string;
+  suggested_actions: string[];
+}

@@ -35,7 +35,60 @@ class ProductBase(BaseModel):
 
 
 class ProductCreate(ProductBase):
-    pass
+    storefront_price: Optional[Decimal] = Field(default=None, description="Initial controlled storefront price")
+
+
+class ProductUpdate(BaseModel):
+    title: Optional[str] = Field(default=None, min_length=1, max_length=200)
+    description: Optional[str] = None
+    price: Optional[Decimal] = Field(default=None, gt=Decimal("0.00"))
+    currency: Optional[str] = Field(default=None, min_length=3, max_length=3)
+    availability: Optional[str] = None
+
+    @field_validator("currency")
+    @classmethod
+    def validate_currency(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return None
+        upper_v = v.upper().strip()
+        if upper_v not in SUPPORTED_CURRENCIES:
+            raise ValueError(f"Currency '{v}' is not supported. Must be one of {sorted(SUPPORTED_CURRENCIES)}")
+        return upper_v
+
+    @field_validator("price")
+    @classmethod
+    def validate_monetary_precision(cls, v: Optional[Decimal]) -> Optional[Decimal]:
+        if v is None:
+            return None
+        exp = v.as_tuple().exponent
+        if isinstance(exp, int) and exp < -2:
+            raise ValueError(f"Monetary price '{v}' cannot exceed 2 decimal places of precision")
+        if v <= Decimal("0.00"):
+            raise ValueError("Price must be greater than zero")
+        return v
+
+
+class StorefrontPriceUpdate(BaseModel):
+    price: Decimal = Field(..., gt=Decimal("0.00"), description="Controlled storefront price")
+    currency: str = Field(default="USD", min_length=3, max_length=3)
+
+    @field_validator("currency")
+    @classmethod
+    def validate_currency(cls, v: str) -> str:
+        upper_v = v.upper().strip()
+        if upper_v not in SUPPORTED_CURRENCIES:
+            raise ValueError(f"Currency '{v}' is not supported. Must be one of {sorted(SUPPORTED_CURRENCIES)}")
+        return upper_v
+
+    @field_validator("price")
+    @classmethod
+    def validate_monetary_precision(cls, v: Decimal) -> Decimal:
+        exp = v.as_tuple().exponent
+        if isinstance(exp, int) and exp < -2:
+            raise ValueError(f"Monetary price '{v}' cannot exceed 2 decimal places of precision")
+        if v <= Decimal("0.00"):
+            raise ValueError("Price must be greater than zero")
+        return v
 
 
 class ProductResponse(BaseModel):

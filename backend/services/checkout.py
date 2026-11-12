@@ -16,6 +16,7 @@ from backend.policies.checkout_policy import (
     ReservationStatus,
     validate_checkout_preflight,
 )
+from backend.repositories.merchant import MerchantRepository
 from backend.repositories.order import OrderRepository
 from backend.repositories.product import ProductRepository
 from backend.repositories.reservation import ReservationRepository
@@ -50,6 +51,7 @@ class CheckoutService:
         self.scan_repo = ScanRepository(session)
         self.order_repo = OrderRepository(session)
         self.reservation_repo = ReservationRepository(session)
+        self.merchant_repo = MerchantRepository(session)
 
     def preflight_check(self, sku: str) -> PreflightCheckResponse:
         """
@@ -113,6 +115,15 @@ class CheckoutService:
         local_order_id = f"prip_ord_{uuid.uuid4().hex[:12]}"
         correlation_id = f"corr_{uuid.uuid4().hex[:12]}"
 
+        # Resolve merchant payee routing only if partner permissions are confirmed/enabled
+        from backend.core.config import get_settings
+        settings = get_settings()
+        payee_merchant_id = None
+        if settings.paypal_enable_payee_routing:
+            merchant_record = self.merchant_repo.get_by_id(resolved_merchant_id)
+            if merchant_record and merchant_record.paypal_merchant_id:
+                payee_merchant_id = merchant_record.paypal_merchant_id
+
         # 3. Call PayPal Orders v2 external REST endpoint OUTSIDE database transaction
         # Propagate stable PayPal-Request-Id for order creation idempotency
         paypal_request_id = request.idempotency_key or local_order_id
@@ -124,6 +135,7 @@ class CheckoutService:
             return_url=request.return_url,
             cancel_url=request.cancel_url,
             paypal_request_id=paypal_request_id,
+            payee_merchant_id=payee_merchant_id,
         )
 
         # 4. Atomic database commit: order, reservation, audit

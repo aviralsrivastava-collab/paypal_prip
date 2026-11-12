@@ -1,3 +1,4 @@
+import datetime
 import json
 import uuid
 from decimal import Decimal
@@ -288,3 +289,192 @@ class CatalogService:
             "storefront_created": storefront_created,
             "reset_applied": reset,
         }
+
+    def create_product(
+        self,
+        merchant_id: str,
+        sku: str,
+        title: str,
+        price: Decimal,
+        currency: str = "USD",
+        description: Optional[str] = None,
+        availability: str = "IN_STOCK",
+        storefront_price: Optional[Decimal] = None,
+        actor_id: str = "merchant",
+    ) -> ProductResponse:
+        existing = self.product_repo.get_by_sku(sku, merchant_id=merchant_id)
+        if existing:
+            raise ValueError(f"Product with SKU '{sku}' already exists in catalog.")
+
+        correlation_id = f"prod-create-{uuid.uuid4()}"
+        with atomic_transaction(self.session):
+            product = Product(
+                merchant_id=merchant_id,
+                sku=sku,
+                title=title,
+                description=description,
+                price=price,
+                currency=currency,
+                availability=availability,
+                source_version=1,
+            )
+            self.product_repo.create(product)
+
+            sf = self.storefront_repo.get_by_sku(sku)
+            if not sf:
+                sf = StorefrontProduct(
+                    merchant_id=merchant_id,
+                    sku=sku,
+                    title=title,
+                    price=storefront_price if storefront_price is not None else price,
+                    currency=currency,
+                    availability=availability,
+                    url_path=f"/products/{sku.lower()}",
+                    version=1,
+                )
+                self.storefront_repo.create(sf)
+
+            AuditService.log_event(
+                self.session,
+                AuditEventCreate(
+                    merchant_id=merchant_id,
+                    actor_type="merchant",
+                    actor_id=actor_id,
+                    action="CATALOG_PRODUCT_CREATED",
+                    entity_type="product",
+                    entity_id=sku,
+                    correlation_id=correlation_id,
+                    details=json.dumps({"price": str(price), "currency": currency, "title": title}),
+                ),
+            )
+
+        return ProductResponse.from_orm_model(product)
+
+    def update_product(
+        self,
+        product_id: int,
+        merchant_id: str,
+        title: Optional[str] = None,
+        description: Optional[str] = None,
+        price: Optional[Decimal] = None,
+        currency: Optional[str] = None,
+        availability: Optional[str] = None,
+        actor_id: str = "merchant",
+    ) -> ProductResponse:
+        product = self.product_repo.get_by_id(product_id)
+        if not product:
+            raise KeyError(f"Product with ID {product_id} not found.")
+        if product.merchant_id != merchant_id:
+            raise PermissionError(f"Actor from merchant '{merchant_id}' cannot mutate product belonging to '{product.merchant_id}'.")
+
+        changes = {}
+        with atomic_transaction(self.session):
+            if title is not None:
+                changes["title"] = {"old": product.title, "new": title}
+                product.title = title
+            if description is not None:
+                changes["description"] = {"old": product.description, "new": description}
+                product.description = description
+            if price is not None:
+                changes["price"] = {"old": str(product.price), "new": str(price)}
+                product.price = price
+            if currency is not None:
+                changes["currency"] = {"old": product.currency, "new": currency}
+                product.currency = currency
+            if availability is not None:
+                changes["availability"] = {"old": product.availability, "new": availability}
+                product.availability = availability
+
+            product.source_version += 1
+            product.updated_at = datetime.datetime.now(datetime.timezone.utc)
+            self.product_repo.update(product)
+
+            correlation_id = f"prod-upd-{uuid.uuid4()}"
+            AuditService.log_event(
+                self.session,
+                AuditEventCreate(
+                    merchant_id=merchant_id,
+                    actor_type="merchant",
+                    actor_id=actor_id,
+                    action="CATALOG_PRODUCT_UPDATED",
+                    entity_type="product",
+                    entity_id=product.sku,
+                    correlation_id=correlation_id,
+                    details=json.dumps(changes),
+                ),
+            )
+
+        return ProductResponse.from_orm_model(product)
+
+    def delete_product(
+        self,
+        product_id: int,
+        merchant_id: str,
+        actor_id: str = "merchant",
+    ) -> None:
+        product = self.product_repo.get_by_id(product_id)
+        if not product:
+            raise KeyError(f"Product with ID {product_id} not found.")
+        if product.merchant_id != merchant_id:
+            raise PermissionError(f"Actor from merchant '{merchant_id}' cannot mutate product belonging to '{product.merchant_id}'.")
+
+        sku = product.sku
+        with atomic_transaction(self.session):
+            self.product_repo.delete(product)
+
+            correlation_id = f"prod-del-{uuid.uuid4()}"
+            AuditService.log_event(
+                self.session,
+                AuditEventCreate(
+                    merchant_id=merchant_id,
+                    actor_type="merchant",
+                    actor_id=actor_id,
+                    action="CATALOG_PRODUCT_DELETED",
+                    entity_type="product",
+                    entity_id=sku,
+                    correlation_id=correlation_id,
+                    details=json.dumps({"sku": sku, "product_id": product_id}),
+                ),
+            )
+
+    def set_storefront_price(
+        self,
+        sku: str,
+        merchant_id: str,
+        new_price: Decimal,
+        currency: str = "USD",
+        actor_id: str = "merchant",
+    ) -> ProductComparisonResponse:
+        sf = self.storefront_repo.get_by_sku(sku)
+        if not sf:
+            raise KeyError(f"Storefront product with SKU '{sku}' not found.")
+        if sf.merchant_id != merchant_id:
+            raise PermissionError(f"Actor from merchant '{merchant_id}' cannot mutate storefront product for '{sf.merchant_id}'.")
+
+        old_price = str(sf.price)
+        with atomic_transaction(self.session):
+            sf.price = new_price
+            sf.currency = currency
+            sf.version += 1
+            sf.updated_at = datetime.datetime.now(datetime.timezone.utc)
+            self.storefront_repo.create(sf)
+
+            correlation_id = f"sf-price-{uuid.uuid4()}"
+            AuditService.log_event(
+                self.session,
+                AuditEventCreate(
+                    merchant_id=merchant_id,
+                    actor_type="merchant",
+                    actor_id=actor_id,
+                    action="STOREFRONT_PRICE_MODIFIED",
+                    entity_type="storefront_product",
+                    entity_id=sku,
+                    correlation_id=correlation_id,
+                    details=json.dumps({"old_price": old_price, "new_price": str(new_price), "currency": currency}),
+                ),
+            )
+
+        res = self.get_product_by_sku(sku, merchant_id=merchant_id)
+        if not res:
+            raise KeyError(f"Product with SKU '{sku}' not found.")
+        return res

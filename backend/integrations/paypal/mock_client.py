@@ -49,6 +49,7 @@ class MockPayPalClient(PayPalClientInterface):
         return_url: Optional[str] = None,
         cancel_url: Optional[str] = None,
         paypal_request_id: Optional[str] = None,
+        payee_merchant_id: Optional[str] = None,
     ) -> PayPalOrderResponse:
         if paypal_request_id:
             self.received_request_ids.append(paypal_request_id)
