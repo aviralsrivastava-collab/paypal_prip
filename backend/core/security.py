@@ -1,6 +1,6 @@
 import base64
 import logging
-from typing import Any, Dict, Optional, Sequence, Tuple, cast
+from typing import Any, Callable, Dict, Optional, Sequence, Tuple, cast
 from urllib.parse import urlparse
 
 import jwt
@@ -610,7 +610,7 @@ ROLE_LEVELS: Dict[str, int] = {
 }
 
 
-def require_role(min_role: str):
+def require_role(min_role: str) -> Callable[[AuthenticatedActor], AuthenticatedActor]:
     """
     Authorization dependency verifying the actor has at least the specified role level.
     Hierarchy: VIEWER (10) < MANAGER (20) < ADMIN (30) < OWNER (40) < superadmin (100).

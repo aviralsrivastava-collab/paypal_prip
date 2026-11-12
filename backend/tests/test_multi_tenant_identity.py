@@ -177,3 +177,20 @@ def test_switch_tenant_unauthorized_rejected(db_session: Session):
     ok_res = switch_active_tenant(SwitchTenantRequest(merchant_id=m_a.id), actor=bob_actor, db=db_session)
     assert ok_res.active_merchant_id == m_a.id
     assert ok_res.switched is True
+
+
+def test_paypal_merchant_login_endpoint(db_session: Session):
+    from backend.api.auth import login_with_paypal_merchant
+    from backend.schemas.merchant import PayPalMerchantLoginRequest
+
+    req = PayPalMerchantLoginRequest(
+        paypal_merchant_id="sb-test-merchant-99@business.example.com",
+        merchant_name="Test PayPal Store",
+    )
+    res = login_with_paypal_merchant(req, db=db_session)
+    assert res.access_token is not None
+    assert res.token_type == "Bearer"
+    assert res.paypal_merchant_id == "sb-test-merchant-99@business.example.com"
+    assert res.merchant_name == "Test PayPal Store"
+    assert res.role == "OWNER"
+    assert res.profile.email == "sb-test-merchant-99@business.example.com"

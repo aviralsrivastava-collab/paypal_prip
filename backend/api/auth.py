@@ -1,11 +1,11 @@
 import datetime
 import re
-from typing import List
+from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, status
 from sqlalchemy.orm import Session
 
-from backend.core.database import get_db
+from backend.core.database import atomic_transaction, get_db
 from backend.core.security import (
     AuthenticatedActor,
     create_jwt_token,
@@ -40,76 +40,93 @@ def login_with_paypal_merchant(
     using their verified PayPal Sandbox Merchant ID or sandbox business identity.
     Issues a signed session token scoped to the merchant tenant.
     """
-    paypal_merchant_id = request.paypal_merchant_id.strip()
-    raw_name = (request.merchant_name or "").strip()
-    clean_id = re.sub(r"[^a-zA-Z0-9_-]", "_", paypal_merchant_id.split("@")[0]).lower()[:30]
+    paypal_merchant_id: str = str(request.paypal_merchant_id).strip()
+    raw_name: str = str(request.merchant_name or "").strip()
+    clean_id: str = re.sub(r"[^a-zA-Z0-9_-]", "_", paypal_merchant_id.split("@")[0]).lower()[:30]
 
     service = IdentityService(db)
 
     # 1. Look up existing merchant by paypal_merchant_id, id, or slug
-    merchant = None
+    matched_merchant: Optional[Merchant] = None
     all_merchants = service.merchant_repo.list_all(limit=100)
     for m in all_merchants:
         if m.paypal_merchant_id == paypal_merchant_id or m.id == paypal_merchant_id or m.slug == clean_id:
-            merchant = m
+            matched_merchant = m
             break
 
     # If default or recognized sandbox facilitator, match default workspace
-    if not merchant:
+    if matched_merchant is None:
         if paypal_merchant_id.lower() in ("default", "merchant_default", "sandbox", "sb-w43kfu53089856@business.example.com"):
-            merchant = service.merchant_repo.get_by_id("merchant_default")
+            matched_merchant = service.merchant_repo.get_by_id("merchant_default")
 
-    if not merchant:
+    if matched_merchant is None:
         slug = f"paypal-{clean_id}"
         existing_slug = service.merchant_repo.get_by_slug(slug)
-        if existing_slug:
-            merchant = existing_slug
+        if existing_slug is not None:
+            matched_merchant = existing_slug
         else:
-            merchant = Merchant(
-                slug=slug,
-                name=raw_name or f"PayPal Sandbox Store ({paypal_merchant_id})",
+            with atomic_transaction(db):
+                new_m = Merchant(
+                    slug=slug,
+                    name=raw_name or f"PayPal Sandbox Store ({paypal_merchant_id})",
+                    paypal_merchant_id=paypal_merchant_id,
+                    currency="USD",
+                    status=MerchantStatus.ACTIVE.value,
+                )
+                matched_merchant = service.merchant_repo.create(new_m)
+
+    if matched_merchant is None:
+        with atomic_transaction(db):
+            new_m = Merchant(
+                slug=f"ws-{clean_id}",
+                name=raw_name or "PayPal Sandbox Store",
                 paypal_merchant_id=paypal_merchant_id,
                 currency="USD",
                 status=MerchantStatus.ACTIVE.value,
             )
-            service.merchant_repo.create(merchant)
+            matched_merchant = service.merchant_repo.create(new_m)
 
-    # Ensure paypal_merchant_id is synced
-    if not merchant.paypal_merchant_id:
-        merchant.paypal_merchant_id = paypal_merchant_id
-        db.add(merchant)
-        db.commit()
+    # Type guard: active_merchant is guaranteed non-None
+    active_merchant: Merchant = matched_merchant
+    if not active_merchant.paypal_merchant_id:
+        with atomic_transaction(db):
+            active_merchant.paypal_merchant_id = paypal_merchant_id
+            db.add(active_merchant)
 
     # 2. Derive user & membership
-    user_email = paypal_merchant_id if "@" in paypal_merchant_id else f"{clean_id}@paypal-sandbox.local"
-    user = service.user_repo.get_by_email(user_email)
-    if not user:
-        user = User(
-            iss="https://api-m.sandbox.paypal.com",
-            sub=f"paypal_{clean_id}",
-            email=user_email,
-            full_name=raw_name or f"Merchant ({paypal_merchant_id})",
-        )
-        service.user_repo.create(user)
+    user_email: str = paypal_merchant_id if "@" in paypal_merchant_id else f"{clean_id}@paypal-sandbox.local"
+    matched_user = service.user_repo.get_by_email(user_email)
+    if matched_user is None:
+        with atomic_transaction(db):
+            new_u = User(
+                iss="https://api-m.sandbox.paypal.com",
+                sub=f"paypal_{clean_id}",
+                email=user_email,
+                full_name=raw_name or f"Merchant ({paypal_merchant_id})",
+            )
+            matched_user = service.user_repo.create(new_u)
 
-    membership = service.membership_repo.get_membership(user.id, merchant.id)
-    if not membership:
-        membership = MerchantMembership(
-            user_id=user.id,
-            merchant_id=merchant.id,
-            role=MerchantRole.OWNER.value,
-            is_active=True,
-        )
-        service.membership_repo.create(membership)
+    active_user: User = matched_user
+
+    membership = service.membership_repo.get_membership(str(active_user.id), str(active_merchant.id))
+    if membership is None:
+        with atomic_transaction(db):
+            new_mem = MerchantMembership(
+                user_id=str(active_user.id),
+                merchant_id=str(active_merchant.id),
+                role=MerchantRole.OWNER.value,
+                is_active=True,
+            )
+            service.membership_repo.create(new_mem)
 
     # 3. Mint signed JWT access token scoped to this merchant tenant
     now = datetime.datetime.now(datetime.timezone.utc)
-    token_payload = {
-        "sub": user.id,
-        "email": user.email,
-        "name": user.full_name,
-        "merchant_id": merchant.id,
-        "paypal_merchant_id": paypal_merchant_id,
+    token_payload: Dict[str, Any] = {
+        "sub": str(active_user.id),
+        "email": str(active_user.email),
+        "name": str(active_user.full_name or "Merchant"),
+        "merchant_id": str(active_merchant.id),
+        "paypal_merchant_id": str(paypal_merchant_id),
         "role": MerchantRole.OWNER.value,
         "actor_type": "merchant",
         "iat": int(now.timestamp()),
@@ -118,19 +135,19 @@ def login_with_paypal_merchant(
     token = create_jwt_token(token_payload)
 
     profile = service.get_user_profile(
-        actor_id=user.id,
-        user_id=user.id,
-        email=user.email,
-        active_merchant_id=merchant.id,
+        actor_id=str(active_user.id),
+        user_id=str(active_user.id),
+        email=str(active_user.email),
+        active_merchant_id=str(active_merchant.id),
         active_role=MerchantRole.OWNER.value,
     )
 
     return PayPalMerchantLoginResponse(
         access_token=token,
         token_type="Bearer",
-        merchant_id=merchant.id,
-        merchant_name=merchant.name,
-        paypal_merchant_id=paypal_merchant_id,
+        merchant_id=str(active_merchant.id),
+        merchant_name=str(active_merchant.name),
+        paypal_merchant_id=str(paypal_merchant_id),
         role=MerchantRole.OWNER.value,
         profile=profile,
     )
