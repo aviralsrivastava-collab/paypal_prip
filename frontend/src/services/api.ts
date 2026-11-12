@@ -531,6 +531,36 @@ export class ApiClient {
     return res.json();
   }
 
+  public static async loginWithPayPalMerchant(
+    paypalMerchantId: string,
+    merchantName?: string
+  ): Promise<{
+    access_token: string;
+    token_type: string;
+    merchant_id: string;
+    merchant_name: string;
+    paypal_merchant_id: string;
+    role: string;
+    profile: UserProfile;
+  }> {
+    const res = await fetch(`${this.baseUrl}/auth/paypal-merchant-login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        paypal_merchant_id: paypalMerchantId,
+        merchant_name: merchantName || null,
+      }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || `PayPal merchant login failed: ${res.status}`);
+    }
+    const data = await res.json();
+    this.setAuthToken(data.access_token);
+    this.setActiveMerchantId(data.merchant_id);
+    return data;
+  }
+
   public static async createWorkspace(name: string, slug: string): Promise<MerchantWorkspace> {
     const res = await fetch(`${this.baseUrl}/auth/merchants`, {
       method: 'POST',

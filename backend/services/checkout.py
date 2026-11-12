@@ -99,7 +99,7 @@ class CheckoutService:
 
         # 2. Check database-backed idempotency
         if request.idempotency_key:
-            existing_order = self.order_repo.get_by_idempotency_key(request.idempotency_key)
+            existing_order = self.order_repo.get_by_idempotency_key(str(request.idempotency_key))
             if existing_order:
                 return OrderResponse.model_validate(existing_order)
 
@@ -107,34 +107,34 @@ class CheckoutService:
         if not catalog_product:
             raise ValueError(f"Product {request.sku} not found")
 
-        resolved_merchant_id = merchant_id or catalog_product.merchant_id or "merchant_default"
-        if merchant_id and catalog_product.merchant_id and merchant_id != catalog_product.merchant_id:
+        resolved_merchant_id: str = str(merchant_id or catalog_product.merchant_id or "merchant_default")
+        if merchant_id and catalog_product.merchant_id and merchant_id != str(catalog_product.merchant_id):
             raise ValueError(f"Merchant mismatch: order merchant '{merchant_id}' does not match product merchant '{catalog_product.merchant_id}'")
 
-        total_amount = catalog_product.price * Decimal(request.quantity)
+        total_amount = Decimal(str(catalog_product.price)) * Decimal(str(request.quantity))
         local_order_id = f"prip_ord_{uuid.uuid4().hex[:12]}"
         correlation_id = f"corr_{uuid.uuid4().hex[:12]}"
 
         # Resolve merchant payee routing only if partner permissions are confirmed/enabled
         from backend.core.config import get_settings
         settings = get_settings()
-        payee_merchant_id = None
+        payee_merchant_id: Optional[str] = None
         if settings.paypal_enable_payee_routing:
-            merchant_record = self.merchant_repo.get_by_id(resolved_merchant_id)
+            merchant_record = self.merchant_repo.get_by_id(str(resolved_merchant_id))
             if merchant_record and merchant_record.paypal_merchant_id:
-                payee_merchant_id = merchant_record.paypal_merchant_id
+                payee_merchant_id = str(merchant_record.paypal_merchant_id)
 
         # 3. Call PayPal Orders v2 external REST endpoint OUTSIDE database transaction
         # Propagate stable PayPal-Request-Id for order creation idempotency
         # Enforce PayPal AI Hackathon currency standard (canonical USD default)
         valid_paypal_currencies = {"USD", "EUR", "GBP", "CAD", "AUD"}
-        target_currency = (catalog_product.currency or "USD").upper().strip()
+        target_currency: str = (str(catalog_product.currency) if catalog_product.currency else "USD").upper().strip()
         if target_currency not in valid_paypal_currencies:
             target_currency = "USD"
 
-        paypal_request_id = request.idempotency_key or local_order_id
+        paypal_request_id = str(request.idempotency_key or local_order_id)
         paypal_order = self.paypal_client.create_order(
-            sku=request.sku,
+            sku=str(request.sku),
             amount=total_amount,
             currency=target_currency,
             reference_id=local_order_id,
@@ -153,17 +153,17 @@ class CheckoutService:
                 order_id=local_order_id,
                 merchant_id=resolved_merchant_id,
                 paypal_order_id=paypal_order.paypal_order_id,
-                sku=request.sku,
-                product_id=catalog_product.id,
-                unit_price=catalog_product.price,
+                sku=str(request.sku),
+                product_id=int(catalog_product.id),
+                unit_price=Decimal(str(catalog_product.price)),
                 currency=target_currency,
-                quantity=request.quantity,
+                quantity=int(request.quantity),
                 total_amount=total_amount,
                 order_status=OrderStatus.CREATED.value,
                 payment_status=PaymentStatus.PENDING.value,
-                preflight_scan_id=preflight.scan_id,
+                preflight_scan_id=int(preflight.scan_id) if preflight.scan_id is not None else None,
                 preflight_passed=True,
-                idempotency_key=request.idempotency_key,
+                idempotency_key=str(request.idempotency_key) if request.idempotency_key else None,
                 correlation_id=correlation_id,
             )
             self.order_repo.create(order)
@@ -171,9 +171,9 @@ class CheckoutService:
             # Local demo inventory reservation
             reservation = DemoInventoryReservation(
                 merchant_id=resolved_merchant_id,
-                order_id=order.id,
-                sku=request.sku,
-                quantity=request.quantity,
+                order_id=int(order.id),
+                sku=str(request.sku),
+                quantity=int(request.quantity),
                 status=ReservationStatus.RESERVED.value,
                 expires_at=expires_at,
             )
@@ -194,9 +194,9 @@ class CheckoutService:
                     after_state=json.dumps({
                         "order_id": local_order_id,
                         "paypal_order_id": paypal_order.paypal_order_id,
-                        "sku": request.sku,
+                        "sku": str(request.sku),
                         "amount": str(total_amount),
-                        "currency": catalog_product.currency,
+                        "currency": target_currency,
                         "status": OrderStatus.CREATED.value,
                     }),
                     details=f"Created order with PayPal Orders v2 ({paypal_order.paypal_order_id})",

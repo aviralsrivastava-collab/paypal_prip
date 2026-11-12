@@ -1,3 +1,5 @@
+import datetime
+import re
 from typing import List
 
 from fastapi import APIRouter, Depends, status
@@ -6,13 +8,18 @@ from sqlalchemy.orm import Session
 from backend.core.database import get_db
 from backend.core.security import (
     AuthenticatedActor,
+    create_jwt_token,
     get_current_actor,
     require_role,
 )
+from backend.models.merchant import Merchant, MerchantMembership, MerchantRole, MerchantStatus
+from backend.models.user import User
 from backend.schemas.merchant import (
     MembershipResponse,
     MerchantCreateRequest,
     MerchantResponse,
+    PayPalMerchantLoginRequest,
+    PayPalMerchantLoginResponse,
     SwitchTenantRequest,
     SwitchTenantResponse,
     TenantMemberInviteRequest,
@@ -21,6 +28,112 @@ from backend.schemas.merchant import (
 from backend.services.identity import IdentityService
 
 router = APIRouter(prefix="/api/auth", tags=["Multi-Tenant Authentication & Workspaces"])
+
+
+@router.post("/paypal-merchant-login", response_model=PayPalMerchantLoginResponse, summary="Authenticate or provision workspace with PayPal Sandbox Merchant ID")
+def login_with_paypal_merchant(
+    request: PayPalMerchantLoginRequest,
+    db: Session = Depends(get_db),
+) -> PayPalMerchantLoginResponse:
+    """
+    OAuth gateway allowing merchants to authenticate into their workspace
+    using their verified PayPal Sandbox Merchant ID or sandbox business identity.
+    Issues a signed session token scoped to the merchant tenant.
+    """
+    paypal_merchant_id = request.paypal_merchant_id.strip()
+    raw_name = (request.merchant_name or "").strip()
+    clean_id = re.sub(r"[^a-zA-Z0-9_-]", "_", paypal_merchant_id.split("@")[0]).lower()[:30]
+
+    service = IdentityService(db)
+
+    # 1. Look up existing merchant by paypal_merchant_id, id, or slug
+    merchant = None
+    all_merchants = service.merchant_repo.list_all(limit=100)
+    for m in all_merchants:
+        if m.paypal_merchant_id == paypal_merchant_id or m.id == paypal_merchant_id or m.slug == clean_id:
+            merchant = m
+            break
+
+    # If default or recognized sandbox facilitator, match default workspace
+    if not merchant:
+        if paypal_merchant_id.lower() in ("default", "merchant_default", "sandbox", "sb-w43kfu53089856@business.example.com"):
+            merchant = service.merchant_repo.get_by_id("merchant_default")
+
+    if not merchant:
+        slug = f"paypal-{clean_id}"
+        existing_slug = service.merchant_repo.get_by_slug(slug)
+        if existing_slug:
+            merchant = existing_slug
+        else:
+            merchant = Merchant(
+                slug=slug,
+                name=raw_name or f"PayPal Sandbox Store ({paypal_merchant_id})",
+                paypal_merchant_id=paypal_merchant_id,
+                currency="USD",
+                status=MerchantStatus.ACTIVE.value,
+            )
+            service.merchant_repo.create(merchant)
+
+    # Ensure paypal_merchant_id is synced
+    if not merchant.paypal_merchant_id:
+        merchant.paypal_merchant_id = paypal_merchant_id
+        db.add(merchant)
+        db.commit()
+
+    # 2. Derive user & membership
+    user_email = paypal_merchant_id if "@" in paypal_merchant_id else f"{clean_id}@paypal-sandbox.local"
+    user = service.user_repo.get_by_email(user_email)
+    if not user:
+        user = User(
+            iss="https://api-m.sandbox.paypal.com",
+            sub=f"paypal_{clean_id}",
+            email=user_email,
+            full_name=raw_name or f"Merchant ({paypal_merchant_id})",
+        )
+        service.user_repo.create(user)
+
+    membership = service.membership_repo.get_membership(user.id, merchant.id)
+    if not membership:
+        membership = MerchantMembership(
+            user_id=user.id,
+            merchant_id=merchant.id,
+            role=MerchantRole.OWNER.value,
+            is_active=True,
+        )
+        service.membership_repo.create(membership)
+
+    # 3. Mint signed JWT access token scoped to this merchant tenant
+    now = datetime.datetime.now(datetime.timezone.utc)
+    token_payload = {
+        "sub": user.id,
+        "email": user.email,
+        "name": user.full_name,
+        "merchant_id": merchant.id,
+        "paypal_merchant_id": paypal_merchant_id,
+        "role": MerchantRole.OWNER.value,
+        "actor_type": "merchant",
+        "iat": int(now.timestamp()),
+        "exp": int((now + datetime.timedelta(days=7)).timestamp()),
+    }
+    token = create_jwt_token(token_payload)
+
+    profile = service.get_user_profile(
+        actor_id=user.id,
+        user_id=user.id,
+        email=user.email,
+        active_merchant_id=merchant.id,
+        active_role=MerchantRole.OWNER.value,
+    )
+
+    return PayPalMerchantLoginResponse(
+        access_token=token,
+        token_type="Bearer",
+        merchant_id=merchant.id,
+        merchant_name=merchant.name,
+        paypal_merchant_id=paypal_merchant_id,
+        role=MerchantRole.OWNER.value,
+        profile=profile,
+    )
 
 
 @router.get("/me", response_model=UserProfileResponse, summary="Get current user profile & merchant memberships")

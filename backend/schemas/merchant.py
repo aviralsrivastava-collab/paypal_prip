@@ -58,3 +58,18 @@ class SwitchTenantResponse(BaseModel):
     active_merchant_name: str
     active_role: str
     switched: bool
+
+
+class PayPalMerchantLoginRequest(BaseModel):
+    paypal_merchant_id: str = Field(..., min_length=1, max_length=120, description="PayPal Sandbox Merchant ID or Sandbox Email")
+    merchant_name: Optional[str] = Field(default=None, max_length=200, description="Merchant workspace display name")
+
+
+class PayPalMerchantLoginResponse(BaseModel):
+    access_token: str
+    token_type: str = "Bearer"
+    merchant_id: str
+    merchant_name: str
+    paypal_merchant_id: str
+    role: str = "OWNER"
+    profile: UserProfileResponse

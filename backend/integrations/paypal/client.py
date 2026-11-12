@@ -50,7 +50,7 @@ class PayPalSandboxClient(PayPalClientInterface):
         """Acquires or refreshes OAuth2 token via client_credentials grant."""
         now = datetime.datetime.now(datetime.timezone.utc)
         if self._access_token and self._token_expires_at and now < self._token_expires_at:
-            return self._access_token
+            return str(self._access_token)
 
         if not self.client_id or not self.client_secret:
             raise PayPalAuthError("PayPal client ID and client secret must be configured for Sandbox.")
@@ -74,12 +74,13 @@ class PayPalSandboxClient(PayPalClientInterface):
                 f"Failed to obtain OAuth token from PayPal: [{resp.status_code}] {resp.text}"
             )
 
-        data = resp.json()
-        self._access_token = data["access_token"]
+        data: Dict[str, Any] = resp.json()
+        token: str = str(data["access_token"])
+        self._access_token = token
         expires_in = int(data.get("expires_in", 3600))
         # Add safety buffer of 60 seconds
         self._token_expires_at = now + datetime.timedelta(seconds=max(expires_in - 60, 60))
-        return self._access_token
+        return token
 
     def _headers(self) -> Dict[str, str]:
         token = self._get_access_token()
@@ -149,24 +150,26 @@ class PayPalSandboxClient(PayPalClientInterface):
                 resp.headers.get("paypal-debug-id"),
             )
 
-        data = resp.json()
-        paypal_order_id = data["id"]
-        status = data.get("status", "CREATED")
+        data: Dict[str, Any] = resp.json()
+        paypal_order_id: str = str(data["id"])
+        status: str = str(data.get("status", "CREATED"))
 
-        approve_url = None
-        for link in data.get("links", []):
-            if link.get("rel") == "approve":
-                approve_url = link.get("href")
-                break
+        approve_url: Optional[str] = None
+        raw_links = data.get("links", [])
+        if isinstance(raw_links, list):
+            for link in raw_links:
+                if isinstance(link, dict) and link.get("rel") == "approve":
+                    approve_url = str(link.get("href"))
+                    break
 
         return PayPalOrderResponse(
             paypal_order_id=paypal_order_id,
             status=status,
             intent="CAPTURE",
             amount=amount,
-            currency=currency,
+            currency=canonical_currency,
             approve_url=approve_url,
-            raw_response=data,
+            raw_response=dict(data),
         )
 
     def get_order_details(self, paypal_order_id: str) -> PayPalOrderResponse:
@@ -187,26 +190,29 @@ class PayPalSandboxClient(PayPalClientInterface):
                 resp.headers.get("paypal-debug-id"),
             )
 
-        data = resp.json()
-        pu = data.get("purchase_units", [{}])[0]
-        amt_obj = pu.get("amount", {})
-        amount = Decimal(amt_obj.get("value", "0.00"))
-        currency = amt_obj.get("currency_code", "USD")
+        data: Dict[str, Any] = resp.json()
+        pu_list = data.get("purchase_units", [{}])
+        pu: Dict[str, Any] = pu_list[0] if isinstance(pu_list, list) and pu_list else {}
+        amt_obj: Dict[str, Any] = pu.get("amount", {}) if isinstance(pu.get("amount"), dict) else {}
+        amount = Decimal(str(amt_obj.get("value", "0.00")))
+        currency: str = str(amt_obj.get("currency_code", "USD"))
 
-        approve_url = None
-        for link in data.get("links", []):
-            if link.get("rel") == "approve":
-                approve_url = link.get("href")
-                break
+        approve_url: Optional[str] = None
+        raw_links = data.get("links", [])
+        if isinstance(raw_links, list):
+            for link in raw_links:
+                if isinstance(link, dict) and link.get("rel") == "approve":
+                    approve_url = str(link.get("href"))
+                    break
 
         return PayPalOrderResponse(
-            paypal_order_id=data["id"],
-            status=data.get("status", "CREATED"),
-            intent=data.get("intent", "CAPTURE"),
+            paypal_order_id=str(data["id"]),
+            status=str(data.get("status", "CREATED")),
+            intent=str(data.get("intent", "CAPTURE")),
             amount=amount,
             currency=currency,
             approve_url=approve_url,
-            raw_response=data,
+            raw_response=dict(data),
         )
 
     def capture_order(
@@ -235,25 +241,26 @@ class PayPalSandboxClient(PayPalClientInterface):
                 resp.headers.get("paypal-debug-id"),
             )
 
-        data = resp.json()
-        status = data.get("status", "COMPLETED")
-        pu = data.get("purchase_units", [{}])[0]
-        payments = pu.get("payments", {})
-        captures = payments.get("captures", [{}])
-        first_capture = captures[0] if captures else {}
+        data: Dict[str, Any] = resp.json()
+        status: str = str(data.get("status", "COMPLETED"))
+        pu_list = data.get("purchase_units", [{}])
+        pu: Dict[str, Any] = pu_list[0] if isinstance(pu_list, list) and pu_list else {}
+        payments: Dict[str, Any] = pu.get("payments", {}) if isinstance(pu.get("payments"), dict) else {}
+        captures_list = payments.get("captures", [{}])
+        first_capture: Dict[str, Any] = captures_list[0] if isinstance(captures_list, list) and captures_list else {}
 
-        capture_id = first_capture.get("id", f"CAP-{paypal_order_id}")
-        capture_status = first_capture.get("status", status)
+        capture_id: str = str(first_capture.get("id", f"CAP-{paypal_order_id}"))
+        capture_status: str = str(first_capture.get("status", status))
 
-        amt_obj = first_capture.get("amount", {})
-        amount = Decimal(amt_obj.get("value", "0.00"))
-        currency = amt_obj.get("currency_code", "USD")
+        amt_obj: Dict[str, Any] = first_capture.get("amount", {}) if isinstance(first_capture.get("amount"), dict) else {}
+        amount = Decimal(str(amt_obj.get("value", "0.00")))
+        currency: str = str(amt_obj.get("currency_code", "USD"))
 
-        breakdown = first_capture.get("seller_receivable_breakdown", {})
-        fee_obj = breakdown.get("paypal_fee", {})
-        fee_amount = Decimal(fee_obj.get("value")) if fee_obj.get("value") else None
-        net_obj = breakdown.get("net_amount", {})
-        net_amount = Decimal(net_obj.get("value")) if net_obj.get("value") else None
+        breakdown: Dict[str, Any] = first_capture.get("seller_receivable_breakdown", {}) if isinstance(first_capture.get("seller_receivable_breakdown"), dict) else {}
+        fee_obj: Dict[str, Any] = breakdown.get("paypal_fee", {}) if isinstance(breakdown.get("paypal_fee"), dict) else {}
+        fee_amount = Decimal(str(fee_obj.get("value"))) if fee_obj.get("value") else None
+        net_obj: Dict[str, Any] = breakdown.get("net_amount", {}) if isinstance(breakdown.get("net_amount"), dict) else {}
+        net_amount = Decimal(str(net_obj.get("value"))) if net_obj.get("value") else None
 
         return PayPalCaptureResponse(
             paypal_capture_id=capture_id,
@@ -263,7 +270,7 @@ class PayPalSandboxClient(PayPalClientInterface):
             currency=currency,
             fee_amount=fee_amount,
             net_amount=net_amount,
-            raw_response=data,
+            raw_response=dict(data),
         )
 
     def verify_webhook_signature(
@@ -341,5 +348,6 @@ class PayPalSandboxClient(PayPalClientInterface):
             logger.warning(f"PayPal webhook verification returned [{resp.status_code}]: {resp.text}")
             return False
 
-        result = resp.json()
-        return bool(result.get("verification_status") == "SUCCESS")
+        result: Dict[str, Any] = resp.json()
+        status_val: Any = result.get("verification_status")
+        return bool(status_val == "SUCCESS")

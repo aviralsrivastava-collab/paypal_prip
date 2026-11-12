@@ -21,6 +21,11 @@ export const Dashboard: React.FC = () => {
   const [authToken, setAuthTokenState] = useState<string | null>(ApiClient.getAuthToken());
   const [showManualAuth, setShowManualAuth] = useState(false);
   const [manualTokenInput, setManualTokenInput] = useState('');
+  const [paypalMerchantInput, setPaypalMerchantInput] = useState('sb-w43kfu53089856@business.example.com');
+  const [merchantNameInput, setMerchantNameInput] = useState('Apex Electronics (Sandbox Store)');
+  const [oauthLoading, setOauthLoading] = useState(false);
+  const [oauthNotice, setOauthNotice] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+  const [showLoginPortal, setShowLoginPortal] = useState(false);
 
   // Multi-tenant Workspace & Team Management State
   const [showWorkspaceManager, setShowWorkspaceManager] = useState(false);
@@ -121,7 +126,39 @@ export const Dashboard: React.FC = () => {
   const handleSignOut = () => {
     ApiClient.setAuthToken(null);
     setAuthTokenState(null);
+    setProfile(null);
+    setShowLoginPortal(true);
+    setOauthNotice(null);
     loadDashboardData();
+  };
+
+  const handlePayPalMerchantLogin = async (e?: React.FormEvent, customId?: string, customName?: string) => {
+    if (e) e.preventDefault();
+    const idToUse = (customId || paypalMerchantInput).trim();
+    const nameToUse = (customName || merchantNameInput).trim();
+    if (!idToUse) {
+      setOauthNotice({ type: 'error', text: 'Please enter a valid PayPal Sandbox Merchant ID or sandbox business email.' });
+      return;
+    }
+    setOauthLoading(true);
+    setOauthNotice(null);
+    try {
+      const res = await ApiClient.loginWithPayPalMerchant(idToUse, nameToUse);
+      setAuthTokenState(res.access_token);
+      setShowLoginPortal(false);
+      setOauthNotice({
+        type: 'success',
+        text: `Successfully authenticated with PayPal Sandbox Merchant ID: ${res.paypal_merchant_id}! Workspace: ${res.merchant_name}`,
+      });
+      await loadDashboardData();
+    } catch (err: any) {
+      setOauthNotice({
+        type: 'error',
+        text: err.message || 'Failed to authenticate with PayPal Sandbox Merchant credentials.',
+      });
+    } finally {
+      setOauthLoading(false);
+    }
   };
 
   const handleManualAuthSubmit = (e: React.FormEvent) => {
@@ -398,6 +435,372 @@ export const Dashboard: React.FC = () => {
               </button>
             </div>
           )}
+        </div>
+      </div>
+
+      {/* PayPal Sandbox Merchant OAuth Portal (Login Gate) */}
+      {((!authToken && !profile?.email) || showLoginPortal) && (
+        <div
+          style={{
+            backgroundColor: '#f0f9ff',
+            border: '2px solid #0070ba',
+            borderRadius: '10px',
+            padding: '1.5rem',
+            marginBottom: '2rem',
+            boxShadow: '0 4px 6px -1px rgba(0, 112, 186, 0.1)',
+          }}
+        >
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '0.75rem', marginBottom: '1rem' }}>
+            <div>
+              <span
+                style={{
+                  display: 'inline-block',
+                  backgroundColor: '#0070ba',
+                  color: '#ffffff',
+                  padding: '2px 8px',
+                  borderRadius: '4px',
+                  fontSize: '0.75rem',
+                  fontWeight: 700,
+                  letterSpacing: '0.5px',
+                  marginBottom: '0.35rem',
+                }}
+              >
+                PAYPAL AI HACKATHON OAUTH GATEWAY
+              </span>
+              <h3 style={{ margin: 0, fontSize: '1.35rem', fontWeight: 700, color: '#0f172a' }}>
+                PayPal Sandbox Merchant Authentication Portal
+              </h3>
+            </div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+              <span style={{ fontSize: '0.8rem', color: '#0369a1', fontWeight: 600 }}>
+                Environment: <code>api-m.sandbox.paypal.com</code> (USD)
+              </span>
+              {(authToken || profile?.email) && (
+                <button
+                  onClick={() => setShowLoginPortal(false)}
+                  style={{
+                    background: 'none',
+                    border: '1px solid #94a3b8',
+                    borderRadius: '4px',
+                    padding: '2px 8px',
+                    cursor: 'pointer',
+                    fontSize: '0.8rem',
+                  }}
+                >
+                  ✕ Close
+                </button>
+              )}
+            </div>
+          </div>
+
+          <p style={{ margin: '0 0 1.25rem 0', color: '#334155', fontSize: '0.92rem', lineHeight: 1.5 }}>
+            Log in with your real <strong>PayPal Sandbox Merchant ID</strong> or sandbox business email to establish your tenant boundary, activate AI discrepancy inspection, and start the rest of the PRIP verification process.
+          </p>
+
+          {oauthNotice && (
+            <div
+              style={{
+                padding: '0.6rem 0.85rem',
+                borderRadius: '6px',
+                marginBottom: '1rem',
+                fontSize: '0.85rem',
+                backgroundColor: oauthNotice.type === 'success' ? '#f0fdf4' : '#fef2f2',
+                color: oauthNotice.type === 'success' ? '#166534' : '#991b1b',
+                border: `1px solid ${oauthNotice.type === 'success' ? '#bbf7d0' : '#fecaca'}`,
+              }}
+            >
+              {oauthNotice.text}
+            </div>
+          )}
+
+          <form
+            onSubmit={(e) => handlePayPalMerchantLogin(e)}
+            style={{
+              display: 'grid',
+              gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))',
+              gap: '1rem',
+              alignItems: 'end',
+            }}
+          >
+            <div>
+              <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: 600, color: '#1e293b', marginBottom: '0.3rem' }}>
+                PayPal Sandbox Merchant ID / Email
+              </label>
+              <input
+                type="text"
+                placeholder="e.g. sb-w43kfu53089856@business.example.com"
+                value={paypalMerchantInput}
+                onChange={(e) => setPaypalMerchantInput(e.target.value)}
+                style={{
+                  width: '100%',
+                  padding: '0.55rem 0.75rem',
+                  borderRadius: '6px',
+                  border: '1px solid #94a3b8',
+                  fontSize: '0.9rem',
+                  boxSizing: 'border-box',
+                }}
+                required
+              />
+            </div>
+
+            <div>
+              <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: 600, color: '#1e293b', marginBottom: '0.3rem' }}>
+                Store / Workspace Name
+              </label>
+              <input
+                type="text"
+                placeholder="e.g. Apex Electronics (Sandbox Store)"
+                value={merchantNameInput}
+                onChange={(e) => setMerchantNameInput(e.target.value)}
+                style={{
+                  width: '100%',
+                  padding: '0.55rem 0.75rem',
+                  borderRadius: '6px',
+                  border: '1px solid #94a3b8',
+                  fontSize: '0.9rem',
+                  boxSizing: 'border-box',
+                }}
+              />
+            </div>
+
+            <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
+              <button
+                type="submit"
+                disabled={oauthLoading}
+                style={{
+                  flex: '1 1 180px',
+                  padding: '0.6rem 1.25rem',
+                  backgroundColor: '#0070ba',
+                  color: '#ffffff',
+                  border: '2px solid #005ea6',
+                  borderRadius: '6px',
+                  fontWeight: 700,
+                  fontSize: '0.92rem',
+                  cursor: oauthLoading ? 'wait' : 'pointer',
+                  boxShadow: '0 2px 4px rgba(0, 112, 186, 0.2)',
+                }}
+              >
+                {oauthLoading ? 'Authenticating...' : 'Log In with PayPal Sandbox'}
+              </button>
+              <button
+                type="button"
+                disabled={oauthLoading}
+                onClick={() =>
+                  handlePayPalMerchantLogin(
+                    undefined,
+                    'sb-w43kfu53089856@business.example.com',
+                    'Apex Electronics (Sandbox Store)'
+                  )
+                }
+                style={{
+                  padding: '0.6rem 1rem',
+                  backgroundColor: '#ffd140',
+                  color: '#003087',
+                  border: '1px solid #d4a300',
+                  borderRadius: '6px',
+                  fontWeight: 700,
+                  fontSize: '0.88rem',
+                  cursor: oauthLoading ? 'wait' : 'pointer',
+                }}
+              >
+                Instant Sandbox Connect
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
+
+      {/* Authenticated PayPal Sandbox Merchant Status & Navigation Banner */}
+      <div
+        style={{
+          display: 'flex',
+          justifyContent: 'space-between',
+          alignItems: 'center',
+          flexWrap: 'wrap',
+          gap: '1rem',
+          backgroundColor: '#f8fafc',
+          border: '1px solid #cbd5e1',
+          borderLeft: '4px solid #0070ba',
+          borderRadius: '8px',
+          padding: '1rem 1.25rem',
+          marginBottom: '1.5rem',
+        }}
+      >
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap' }}>
+          <span style={{ fontSize: '1.25rem' }}>🛡️</span>
+          <div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+              <span style={{ fontWeight: 700, color: '#0f172a', fontSize: '1rem' }}>
+                {profile?.memberships?.find((m) => m.merchant_id === profile.active_merchant_id)?.merchant_name ||
+                  profile?.email ||
+                  'PayPal Sandbox Merchant Workspace'}
+              </span>
+              <span
+                style={{
+                  backgroundColor: '#dcfce7',
+                  color: '#15803d',
+                  fontSize: '0.75rem',
+                  fontWeight: 700,
+                  padding: '2px 8px',
+                  borderRadius: '12px',
+                  border: '1px solid #bbf7d0',
+                }}
+              >
+                ● PayPal Sandbox Active
+              </span>
+            </div>
+            <p style={{ margin: '0.2rem 0 0 0', color: '#64748b', fontSize: '0.82rem' }}>
+              Merchant ID:{' '}
+              <code>
+                {profile?.active_merchant_id || 'merchant_default'}
+              </code>{' '}
+              | Currency: <strong>USD</strong> | API: <code>https://api-m.sandbox.paypal.com</code>
+            </p>
+          </div>
+        </div>
+
+        <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+          <button
+            onClick={() => setShowLoginPortal(!showLoginPortal)}
+            style={{
+              padding: '0.4rem 0.8rem',
+              backgroundColor: '#ffffff',
+              color: '#0070ba',
+              border: '1px solid #0070ba',
+              borderRadius: '6px',
+              fontSize: '0.82rem',
+              fontWeight: 600,
+              cursor: 'pointer',
+            }}
+          >
+            {showLoginPortal ? 'Hide Login Gate' : 'Switch PayPal Merchant'}
+          </button>
+        </div>
+      </div>
+
+      {/* 5-Stage Guided Verification Lifecycle Pipeline (Start Rest of Process) */}
+      <div
+        style={{
+          backgroundColor: '#ffffff',
+          border: '1px solid #e2e8f0',
+          borderRadius: '8px',
+          padding: '1rem 1.25rem',
+          marginBottom: '1.5rem',
+          boxShadow: '0 1px 3px rgba(0,0,0,0.05)',
+        }}
+      >
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.75rem', flexWrap: 'wrap', gap: '0.5rem' }}>
+          <h4 style={{ margin: 0, fontSize: '0.9rem', fontWeight: 700, color: '#334155', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+            PRIP Verification Lifecycle (Start Rest of Process)
+          </h4>
+          <span style={{ fontSize: '0.8rem', color: '#64748b' }}>
+            Follow each stage below from inspection to checkout
+          </span>
+        </div>
+
+        <div
+          style={{
+            display: 'grid',
+            gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))',
+            gap: '0.75rem',
+          }}
+        >
+          <div
+            style={{
+              padding: '0.75rem',
+              borderRadius: '6px',
+              backgroundColor: '#eff6ff',
+              border: '1px solid #bfdbfe',
+            }}
+          >
+            <div style={{ fontSize: '0.75rem', fontWeight: 700, color: '#1d4ed8', marginBottom: '0.2rem' }}>
+              STAGE 1: CURRENT
+            </div>
+            <strong style={{ fontSize: '0.9rem', color: '#1e3a8a' }}>OAuth Dashboard</strong>
+            <p style={{ margin: '0.25rem 0 0 0', fontSize: '0.78rem', color: '#475569' }}>
+              Tenancy established & monitoring revenue at risk.
+            </p>
+          </div>
+
+          <a
+            href="/catalog"
+            style={{
+              padding: '0.75rem',
+              borderRadius: '6px',
+              backgroundColor: '#f8fafc',
+              border: '1px solid #e2e8f0',
+              textDecoration: 'none',
+              display: 'block',
+            }}
+          >
+            <div style={{ fontSize: '0.75rem', fontWeight: 700, color: '#64748b', marginBottom: '0.2rem' }}>
+              STAGE 2: STEP NEXT →
+            </div>
+            <strong style={{ fontSize: '0.9rem', color: '#0f172a' }}>Catalog & Storefront</strong>
+            <p style={{ margin: '0.25rem 0 0 0', fontSize: '0.78rem', color: '#475569' }}>
+              Inspect authorized prices vs live storefront.
+            </p>
+          </a>
+
+          <a
+            href="/inspection"
+            style={{
+              padding: '0.75rem',
+              borderRadius: '6px',
+              backgroundColor: '#f8fafc',
+              border: '1px solid #e2e8f0',
+              textDecoration: 'none',
+              display: 'block',
+            }}
+          >
+            <div style={{ fontSize: '0.75rem', fontWeight: 700, color: '#64748b', marginBottom: '0.2rem' }}>
+              STAGE 3: DISCOVERY →
+            </div>
+            <strong style={{ fontSize: '0.9rem', color: '#0f172a' }}>Inspection & AI Scan</strong>
+            <p style={{ margin: '0.25rem 0 0 0', fontSize: '0.78rem', color: '#475569' }}>
+              Run deterministic scans & trigger Gemini diagnosis.
+            </p>
+          </a>
+
+          <a
+            href="/corrections"
+            style={{
+              padding: '0.75rem',
+              borderRadius: '6px',
+              backgroundColor: '#f8fafc',
+              border: '1px solid #e2e8f0',
+              textDecoration: 'none',
+              display: 'block',
+            }}
+          >
+            <div style={{ fontSize: '0.75rem', fontWeight: 700, color: '#64748b', marginBottom: '0.2rem' }}>
+              STAGE 4: SIGN-OFF →
+            </div>
+            <strong style={{ fontSize: '0.9rem', color: '#0f172a' }}>Approve Corrections</strong>
+            <p style={{ margin: '0.25rem 0 0 0', fontSize: '0.78rem', color: '#475569' }}>
+              Sign off on proposed automated price corrections.
+            </p>
+          </a>
+
+          <a
+            href="/checkout"
+            style={{
+              padding: '0.75rem',
+              borderRadius: '6px',
+              backgroundColor: '#f8fafc',
+              border: '1px solid #e2e8f0',
+              textDecoration: 'none',
+              display: 'block',
+            }}
+          >
+            <div style={{ fontSize: '0.75rem', fontWeight: 700, color: '#64748b', marginBottom: '0.2rem' }}>
+              STAGE 5: REVENUE →
+            </div>
+            <strong style={{ fontSize: '0.9rem', color: '#0f172a' }}>PayPal Gated Checkout</strong>
+            <p style={{ margin: '0.25rem 0 0 0', fontSize: '0.78rem', color: '#475569' }}>
+              Execute protected checkout via Orders v2 in USD.
+            </p>
+          </a>
         </div>
       </div>
 
