@@ -55,8 +55,9 @@ if (Get-Command git -ErrorAction SilentlyContinue) {
   if ($isGitRepo) {
     # Narrow exceptions for verified non-secret template and scanning tooling:
     # - .env.example: Authorized environment template containing only non-secret placeholders
+    # - frontend/.env.example: Authorized frontend environment template
     # - scripts/secrets_scan.py: Dedicated multi-pattern secret scanner utility
-    $exemptTrackedFiles = @('.env.example', 'scripts/secrets_scan.py')
+    $exemptTrackedFiles = @('.env.example', 'frontend/.env.example', 'scripts/secrets_scan.py')
     $tracked = git ls-files 2>$null
     foreach ($path in $tracked) {
       $normalized = $path.Replace('\', '/')

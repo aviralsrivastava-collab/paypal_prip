@@ -389,10 +389,10 @@ class TestCorrectionsAndRemediation:
 
         results = []
         errors = []
-        conn = seeded_db.connection()
+        engine = seeded_db.get_bind()
 
         def worker():
-            with Session(bind=conn) as w_session:
+            with Session(bind=engine) as w_session:
                 w_service = ProposalService(w_session)
                 try:
                     res = w_service.approve_proposal(proposal.id, merchant_actor)

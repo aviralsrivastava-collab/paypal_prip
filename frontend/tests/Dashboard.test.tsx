@@ -133,7 +133,7 @@ describe('Dashboard Page Component', () => {
   });
 
   it('supports manual token entry and sign out', async () => {
-    vi.spyOn(ApiClient, 'getProfile').mockResolvedValue(null);
+    vi.spyOn(ApiClient, 'getProfile').mockResolvedValue(null as any);
 
     render(<Dashboard />);
 
