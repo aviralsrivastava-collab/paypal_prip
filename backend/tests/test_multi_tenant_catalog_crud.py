@@ -1,4 +1,5 @@
 from decimal import Decimal
+
 import pytest
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
@@ -8,7 +9,6 @@ from backend.api.products import (
     delete_product,
     get_product,
     get_product_by_sku,
-    list_products,
     update_product,
     update_storefront_price,
 )

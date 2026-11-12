@@ -15,8 +15,8 @@ from backend.core.security import (
 )
 from backend.models.merchant import Merchant, MerchantMembership, MerchantRole, MerchantStatus
 from backend.models.user import User
-from backend.repositories.merchant import MerchantRepository
 from backend.repositories.membership import MembershipRepository
+from backend.repositories.merchant import MerchantRepository
 from backend.repositories.user import UserRepository
 from backend.schemas.merchant import (
     MerchantCreateRequest,
@@ -128,9 +128,9 @@ def test_auth_api_workspace_creation_and_member_invitation(db_session: Session):
     assert any(m.user_email == "staff.member@puma.com" for m in members)
 
     # Remove member
-    membership_repo = MembershipRepository(db_session)
     user_repo = UserRepository(db_session)
     staff_user = user_repo.get_by_email("staff.member@puma.com")
+    assert staff_user is not None
     remove_workspace_member(user_id=staff_user.id, actor=admin_actor, db=db_session)
 
     # Confirm removed

@@ -1,5 +1,6 @@
 import datetime
 from typing import List, Optional
+
 from fastapi import HTTPException, status
 from sqlalchemy.orm import Session
 
@@ -10,7 +11,6 @@ from backend.repositories.membership import MembershipRepository
 from backend.repositories.merchant import MerchantRepository
 from backend.repositories.user import UserRepository
 from backend.schemas.merchant import (
-    MerchantResponse,
     MembershipResponse,
     SwitchTenantResponse,
     UserProfileResponse,

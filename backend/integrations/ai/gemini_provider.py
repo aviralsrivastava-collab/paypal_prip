@@ -80,7 +80,7 @@ class GeminiAIProvider(AIProviderInterface):
             if not candidates:
                 raise AIStructuredOutputError("Gemini returned zero candidates.")
             text_part = candidates[0].get("content", {}).get("parts", [])[0].get("text", "")
-            return text_part
+            return str(text_part)
         except Exception as exc:
             raise AIStructuredOutputError(f"Failed to parse Gemini response payload: {exc}") from exc
 

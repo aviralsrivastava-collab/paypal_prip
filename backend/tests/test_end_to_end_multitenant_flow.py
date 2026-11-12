@@ -1,19 +1,20 @@
-import datetime
 from decimal import Decimal
+
 import pytest
 from sqlalchemy.orm import Session
 
 from backend.core.security import AuthenticatedActor
 from backend.integrations.paypal.mock_client import MockPayPalClient
-from backend.models.merchant import Merchant, MerchantStatus
 from backend.models.order import Order
 from backend.models.reservation import DemoInventoryReservation
 from backend.policies.checkout_policy import OrderStatus, PaymentStatus, ReservationStatus
 from backend.policies.correction_policy import ApprovalStatus, ExecutionStatus
 from backend.schemas.checkout import CreateOrderRequest
 from backend.schemas.payment import CapturePaymentRequest
-from backend.schemas.product import ProductCreate
-from backend.schemas.proposal import CorrectionProposalApproveRequest, CorrectionProposalCreateRequest
+from backend.schemas.proposal import (
+    CorrectionProposalApproveRequest,
+    CorrectionProposalCreateRequest,
+)
 from backend.schemas.scan import ScanCreateRequest
 from backend.services.audit import AuditService
 from backend.services.catalog import CatalogService

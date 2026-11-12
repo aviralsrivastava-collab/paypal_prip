@@ -1,8 +1,9 @@
 from typing import Optional, Sequence
+
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from backend.models.merchant import MerchantMembership, MerchantRole
+from backend.models.merchant import MerchantMembership
 
 
 class MembershipRepository:
@@ -16,14 +17,14 @@ class MembershipRepository:
         stmt = select(MerchantMembership).where(
             MerchantMembership.user_id == user_id,
             MerchantMembership.merchant_id == merchant_id,
-            MerchantMembership.is_active == True,
+            MerchantMembership.is_active.is_(True),
         )
         return self.session.execute(stmt).scalar_one_or_none()
 
     def list_user_memberships(self, user_id: str) -> Sequence[MerchantMembership]:
         stmt = (
             select(MerchantMembership)
-            .where(MerchantMembership.user_id == user_id, MerchantMembership.is_active == True)
+            .where(MerchantMembership.user_id == user_id, MerchantMembership.is_active.is_(True))
             .order_by(MerchantMembership.created_at.asc())
         )
         return self.session.execute(stmt).scalars().all()
@@ -31,7 +32,7 @@ class MembershipRepository:
     def list_merchant_memberships(self, merchant_id: str) -> Sequence[MerchantMembership]:
         stmt = (
             select(MerchantMembership)
-            .where(MerchantMembership.merchant_id == merchant_id, MerchantMembership.is_active == True)
+            .where(MerchantMembership.merchant_id == merchant_id, MerchantMembership.is_active.is_(True))
             .order_by(MerchantMembership.created_at.asc())
         )
         return self.session.execute(stmt).scalars().all()

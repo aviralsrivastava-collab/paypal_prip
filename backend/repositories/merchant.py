@@ -1,8 +1,9 @@
 from typing import Optional, Sequence
+
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from backend.models.merchant import Merchant, MerchantMembership
+from backend.models.merchant import Merchant
 
 
 class MerchantRepository:

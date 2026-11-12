@@ -1,8 +1,9 @@
 from decimal import Decimal
+
 import pytest
 from sqlalchemy.orm import Session
 
-from backend.integrations.paypal.base import PayPalCaptureResponse, PayPalOrderResponse
+from backend.integrations.paypal.base import PayPalCaptureResponse
 from backend.integrations.paypal.mock_client import MockPayPalClient
 from backend.models.merchant import Merchant, MerchantStatus
 from backend.models.order import Order

@@ -370,19 +370,19 @@ class CatalogService:
         changes = {}
         with atomic_transaction(self.session):
             if title is not None:
-                changes["title"] = {"old": product.title, "new": title}
+                changes["title"] = {"old": str(product.title), "new": str(title)}
                 product.title = title
             if description is not None:
-                changes["description"] = {"old": product.description, "new": description}
+                changes["description"] = {"old": str(product.description or ""), "new": str(description)}
                 product.description = description
             if price is not None:
                 changes["price"] = {"old": str(product.price), "new": str(price)}
                 product.price = price
             if currency is not None:
-                changes["currency"] = {"old": product.currency, "new": currency}
+                changes["currency"] = {"old": str(product.currency), "new": str(currency)}
                 product.currency = currency
             if availability is not None:
-                changes["availability"] = {"old": product.availability, "new": availability}
+                changes["availability"] = {"old": str(product.availability), "new": str(availability)}
                 product.availability = availability
 
             product.source_version += 1

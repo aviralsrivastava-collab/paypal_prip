@@ -1,4 +1,5 @@
 from typing import List
+
 from fastapi import APIRouter, Depends, status
 from sqlalchemy.orm import Session
 
@@ -9,9 +10,9 @@ from backend.core.security import (
     require_role,
 )
 from backend.schemas.merchant import (
+    MembershipResponse,
     MerchantCreateRequest,
     MerchantResponse,
-    MembershipResponse,
     SwitchTenantRequest,
     SwitchTenantResponse,
     TenantMemberInviteRequest,

@@ -1,8 +1,15 @@
 from decimal import Decimal
+
 import pytest
 from sqlalchemy.orm import Session
 
-from backend.api.chat import ChatMessage, ChatRequest, chat_with_assistant, get_catalog_intelligence, get_revenue_intelligence
+from backend.api.chat import (
+    ChatMessage,
+    ChatRequest,
+    chat_with_assistant,
+    get_catalog_intelligence,
+    get_revenue_intelligence,
+)
 from backend.core.security import AuthenticatedActor
 from backend.integrations.ai.context import DiagnosisPromptContext
 from backend.integrations.ai.gemini_provider import GeminiAIProvider

@@ -1,5 +1,5 @@
-from decimal import Decimal
 from typing import Any, Dict, List, Optional
+
 from sqlalchemy.orm import Session
 
 from backend.integrations.ai.gemini_provider import GeminiAIProvider

@@ -99,6 +99,9 @@ export const Dashboard: React.FC = () => {
           <h1 style={{ fontSize: '1.75rem', fontWeight: 700, margin: '0 0 0.25rem 0', color: '#0f172a' }}>
             Merchant Revenue Intelligence Platform
           </h1>
+          <h2 style={{ fontSize: '1.1rem', fontWeight: 600, margin: '0 0 0.25rem 0', color: '#334155' }}>
+            Commerce Integrity Overview
+          </h2>
           <p style={{ margin: 0, color: '#64748b', fontSize: '0.95rem' }}>
             Detect the discrepancy. Approve the correction. Verify the checkout.
           </p>
@@ -395,7 +398,7 @@ export const Dashboard: React.FC = () => {
             }}
           >
             <h3 style={{ fontSize: '1rem', fontWeight: 600, margin: '0 0 0.75rem 0', color: '#0f172a' }}>
-              System Health & Sandbox
+              System Readiness & Sandbox Health
             </h3>
             <div style={{ fontSize: '0.85rem', display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
               <div style={{ display: 'flex', justifyContent: 'space-between' }}>
