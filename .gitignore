@@ -32,6 +32,8 @@ coverage/
 .coverage
 coverage.xml
 htmlcov/
+screenshots/
+.puppeteer_profile_*
 
 # Local databases, dumps and runtime artifacts
 *.sqlite
