@@ -50,7 +50,9 @@ export class ApiClient {
   }
 
   public static async getProducts(): Promise<ProductComparison[]> {
-    const res = await fetch(`${this.baseUrl}/products`);
+    const res = await fetch(`${this.baseUrl}/products`, {
+      headers: this.getAuthHeaders(),
+    });
     if (!res.ok) {
       throw new Error(`Failed to fetch catalog products: ${res.status}`);
     }
@@ -453,23 +455,65 @@ export class ApiClient {
     return res.json();
   }
 
+  // --- Safe LocalStorage / In-Memory Fallback ---
+  private static memoryStorage: Record<string, string> = {};
+
+  private static getStorageItem(key: string): string | null {
+    try {
+      if (typeof window !== 'undefined' && window.localStorage) {
+        return window.localStorage.getItem(key);
+      }
+    } catch {
+      // Fallback to in-memory
+    }
+    return this.memoryStorage[key] || null;
+  }
+
+  private static setStorageItem(key: string, value: string | null): void {
+    try {
+      if (typeof window !== 'undefined' && window.localStorage) {
+        if (value) {
+          window.localStorage.setItem(key, value);
+        } else {
+          window.localStorage.removeItem(key);
+        }
+        return;
+      }
+    } catch {
+      // Fallback to in-memory
+    }
+    if (value) {
+      this.memoryStorage[key] = value;
+    } else {
+      delete this.memoryStorage[key];
+    }
+  }
+
   // --- Multi-Tenant & Identity Methods ---
+  public static getAuthToken(): string | null {
+    return this.getStorageItem('prip_auth_token');
+  }
+
+  public static setAuthToken(token: string | null): void {
+    this.setStorageItem('prip_auth_token', token);
+  }
+
   public static getActiveMerchantId(): string | null {
-    return localStorage.getItem('prip_active_merchant_id');
+    return this.getStorageItem('prip_active_merchant_id');
   }
 
   public static setActiveMerchantId(merchantId: string | null): void {
-    if (merchantId) {
-      localStorage.setItem('prip_active_merchant_id', merchantId);
-    } else {
-      localStorage.removeItem('prip_active_merchant_id');
-    }
+    this.setStorageItem('prip_active_merchant_id', merchantId);
   }
 
   public static getAuthHeaders(): Record<string, string> {
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
     };
+    const token = this.getAuthToken();
+    if (token) {
+      headers['Authorization'] = `Bearer ${token}`;
+    }
     const activeMerchant = this.getActiveMerchantId();
     if (activeMerchant) {
       headers['X-Merchant-ID'] = activeMerchant;

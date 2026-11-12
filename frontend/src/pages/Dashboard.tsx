@@ -4,6 +4,7 @@ import {
   CatalogIntelligence,
   ChatMessage,
   HealthStatus,
+  Membership,
   RevenueIntelligence,
   UserProfile,
 } from '../types';
@@ -15,6 +16,21 @@ export const Dashboard: React.FC = () => {
   const [catalogIntel, setCatalogIntel] = useState<CatalogIntelligence | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+
+  // Authentication State
+  const [authToken, setAuthTokenState] = useState<string | null>(ApiClient.getAuthToken());
+  const [showManualAuth, setShowManualAuth] = useState(false);
+  const [manualTokenInput, setManualTokenInput] = useState('');
+
+  // Multi-tenant Workspace & Team Management State
+  const [showWorkspaceManager, setShowWorkspaceManager] = useState(false);
+  const [members, setMembers] = useState<Membership[]>([]);
+  const [membersLoading, setMembersLoading] = useState(false);
+  const [inviteEmail, setInviteEmail] = useState('');
+  const [inviteRole, setInviteRole] = useState('VIEWER');
+  const [newWsName, setNewWsName] = useState('');
+  const [newWsSlug, setNewWsSlug] = useState('');
+  const [managerNotice, setManagerNotice] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
 
   // Chat State
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([
@@ -51,12 +67,143 @@ export const Dashboard: React.FC = () => {
     loadDashboardData();
   }, []);
 
+  // Google OAuth 2.0 / OIDC Initialization
+  useEffect(() => {
+    if (authToken) return;
+
+    const clientId = import.meta.env.VITE_OIDC_CLIENT_ID || '502517689787-5glaktsphtgcvt732n2ck2qg13fnvp5h.apps.googleusercontent.com';
+
+    const initGoogleGsi = () => {
+      if (typeof window !== 'undefined' && (window as any).google?.accounts?.id) {
+        try {
+          (window as any).google.accounts.id.initialize({
+            client_id: clientId,
+            callback: (res: { credential?: string }) => {
+              if (res?.credential) {
+                ApiClient.setAuthToken(res.credential);
+                setAuthTokenState(res.credential);
+                loadDashboardData();
+              }
+            },
+          });
+          const btnElem = document.getElementById('googleSignInBtn');
+          if (btnElem) {
+            btnElem.innerHTML = '';
+            (window as any).google.accounts.id.renderButton(btnElem, {
+              theme: 'outline',
+              size: 'medium',
+              text: 'signin_with',
+              shape: 'rectangular',
+            });
+          }
+        } catch {
+          // Gracefully ignore during unit tests or headless runners
+        }
+      }
+    };
+
+    if (typeof window !== 'undefined' && !(window as any).google?.accounts?.id) {
+      const scriptId = 'google-gsi-client';
+      if (!document.getElementById(scriptId)) {
+        const script = document.createElement('script');
+        script.id = scriptId;
+        script.src = 'https://accounts.google.com/gsi/client';
+        script.async = true;
+        script.defer = true;
+        script.onload = initGoogleGsi;
+        document.head.appendChild(script);
+      }
+    } else {
+      initGoogleGsi();
+    }
+  }, [authToken]);
+
+  const handleSignOut = () => {
+    ApiClient.setAuthToken(null);
+    setAuthTokenState(null);
+    loadDashboardData();
+  };
+
+  const handleManualAuthSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!manualTokenInput.trim()) return;
+    ApiClient.setAuthToken(manualTokenInput.trim());
+    setAuthTokenState(manualTokenInput.trim());
+    setManualTokenInput('');
+    setShowManualAuth(false);
+    loadDashboardData();
+  };
+
   const handleSwitchTenant = async (tenantId: string) => {
     try {
       await ApiClient.switchTenant(tenantId);
       await loadDashboardData();
+      if (showWorkspaceManager) {
+        await loadMembers();
+      }
     } catch (err: any) {
       alert(err.message || 'Failed to switch tenant workspace');
+    }
+  };
+
+  const loadMembers = async () => {
+    setMembersLoading(true);
+    setManagerNotice(null);
+    try {
+      const data = await ApiClient.getMembers();
+      setMembers(data);
+    } catch (err: any) {
+      setManagerNotice({ type: 'error', text: err.message || 'Failed to fetch members' });
+    } finally {
+      setMembersLoading(false);
+    }
+  };
+
+  const toggleWorkspaceManager = () => {
+    const nextState = !showWorkspaceManager;
+    setShowWorkspaceManager(nextState);
+    if (nextState) {
+      loadMembers();
+    }
+  };
+
+  const handleCreateWorkspace = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newWsName.trim() || !newWsSlug.trim()) return;
+    try {
+      const ws = await ApiClient.createWorkspace(newWsName.trim(), newWsSlug.trim());
+      setNewWsName('');
+      setNewWsSlug('');
+      setManagerNotice({ type: 'success', text: `Workspace "${ws.name}" created successfully!` });
+      await ApiClient.switchTenant(ws.id);
+      await loadDashboardData();
+      await loadMembers();
+    } catch (err: any) {
+      setManagerNotice({ type: 'error', text: err.message || 'Failed to create workspace' });
+    }
+  };
+
+  const handleInviteMember = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!inviteEmail.trim()) return;
+    try {
+      await ApiClient.inviteMember(inviteEmail.trim(), inviteRole);
+      setInviteEmail('');
+      setManagerNotice({ type: 'success', text: `Invited ${inviteEmail} as ${inviteRole}.` });
+      await loadMembers();
+    } catch (err: any) {
+      setManagerNotice({ type: 'error', text: err.message || 'Failed to invite member' });
+    }
+  };
+
+  const handleRemoveMember = async (userId: string) => {
+    if (!window.confirm('Are you sure you want to remove this member?')) return;
+    try {
+      await ApiClient.removeMember(userId);
+      setManagerNotice({ type: 'success', text: 'Member removed successfully.' });
+      await loadMembers();
+    } catch (err: any) {
+      setManagerNotice({ type: 'error', text: err.message || 'Failed to remove member' });
     }
   };
 
@@ -90,6 +237,8 @@ export const Dashboard: React.FC = () => {
           display: 'flex',
           justifyContent: 'space-between',
           alignItems: 'center',
+          flexWrap: 'wrap',
+          gap: '1rem',
           borderBottom: '1px solid #e2e8f0',
           paddingBottom: '1.25rem',
           marginBottom: '1.5rem',
@@ -107,32 +256,365 @@ export const Dashboard: React.FC = () => {
           </p>
         </div>
 
-        {/* Workspace Switcher */}
-        {profile && (
-          <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
-            <span style={{ fontSize: '0.85rem', color: '#64748b' }}>Active Workspace:</span>
-            <select
-              value={profile.active_merchant_id}
-              onChange={(e) => handleSwitchTenant(e.target.value)}
+        {/* Right Section: Auth & Workspace Controls */}
+        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '0.75rem' }}>
+          {/* OAuth Identity / Sign In Bar */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+            {authToken || profile?.email ? (
+              <div
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '0.5rem',
+                  backgroundColor: '#f1f5f9',
+                  padding: '0.35rem 0.75rem',
+                  borderRadius: '20px',
+                  border: '1px solid #cbd5e1',
+                  fontSize: '0.85rem',
+                }}
+              >
+                <span style={{ width: '8px', height: '8px', borderRadius: '50%', backgroundColor: '#22c55e' }} />
+                <span style={{ color: '#0f172a', fontWeight: 600 }}>{profile?.email || 'Authenticated User'}</span>
+                <span
+                  style={{
+                    backgroundColor: '#e2e8f0',
+                    color: '#475569',
+                    fontSize: '0.75rem',
+                    padding: '1px 6px',
+                    borderRadius: '4px',
+                    fontWeight: 700,
+                  }}
+                >
+                  {profile?.active_role || 'OPERATOR'}
+                </span>
+                <button
+                  onClick={handleSignOut}
+                  style={{
+                    marginLeft: '0.25rem',
+                    background: 'none',
+                    border: 'none',
+                    color: '#dc2626',
+                    cursor: 'pointer',
+                    fontSize: '0.8rem',
+                    fontWeight: 600,
+                    textDecoration: 'underline',
+                  }}
+                >
+                  Sign Out
+                </button>
+              </div>
+            ) : (
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                <div id="googleSignInBtn" style={{ minHeight: '38px', minWidth: '180px' }}>
+                  {/* Google rendered button mounts here */}
+                </div>
+                <button
+                  onClick={() => setShowManualAuth(!showManualAuth)}
+                  style={{
+                    fontSize: '0.75rem',
+                    color: '#64748b',
+                    background: 'none',
+                    border: '1px dashed #cbd5e1',
+                    borderRadius: '4px',
+                    padding: '4px 8px',
+                    cursor: 'pointer',
+                  }}
+                >
+                  {showManualAuth ? 'Close Token Input' : 'Paste Token'}
+                </button>
+              </div>
+            )}
+          </div>
+
+          {showManualAuth && (
+            <form onSubmit={handleManualAuthSubmit} style={{ display: 'flex', gap: '0.5rem', marginTop: '0.25rem' }}>
+              <input
+                type="text"
+                placeholder="Bearer JWT token..."
+                value={manualTokenInput}
+                onChange={(e) => setManualTokenInput(e.target.value)}
+                style={{
+                  fontSize: '0.8rem',
+                  padding: '0.3rem 0.5rem',
+                  borderRadius: '4px',
+                  border: '1px solid #cbd5e1',
+                  width: '220px',
+                }}
+              />
+              <button
+                type="submit"
+                style={{
+                  fontSize: '0.8rem',
+                  padding: '0.3rem 0.75rem',
+                  backgroundColor: '#0f172a',
+                  color: '#ffffff',
+                  border: 'none',
+                  borderRadius: '4px',
+                  cursor: 'pointer',
+                }}
+              >
+                Apply
+              </button>
+            </form>
+          )}
+
+          {/* Workspace Switcher & Team Button */}
+          {profile && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+              <span style={{ fontSize: '0.85rem', color: '#64748b' }}>Workspace:</span>
+              <select
+                value={profile.active_merchant_id}
+                onChange={(e) => handleSwitchTenant(e.target.value)}
+                style={{
+                  padding: '0.35rem 0.7rem',
+                  borderRadius: '6px',
+                  border: '1px solid #cbd5e1',
+                  backgroundColor: '#ffffff',
+                  fontWeight: 600,
+                  fontSize: '0.85rem',
+                  cursor: 'pointer',
+                }}
+              >
+                {profile.memberships.map((m) => (
+                  <option key={m.merchant_id} value={m.merchant_id}>
+                    {m.merchant_name} ({m.role})
+                  </option>
+                ))}
+              </select>
+              <button
+                onClick={toggleWorkspaceManager}
+                style={{
+                  padding: '0.35rem 0.75rem',
+                  backgroundColor: showWorkspaceManager ? '#0070ba' : '#ffffff',
+                  color: showWorkspaceManager ? '#ffffff' : '#0070ba',
+                  border: '1px solid #0070ba',
+                  borderRadius: '6px',
+                  fontSize: '0.85rem',
+                  fontWeight: 600,
+                  cursor: 'pointer',
+                }}
+              >
+                👥 {showWorkspaceManager ? 'Hide Team & Workspaces' : 'Team & Workspaces'}
+              </button>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Collapsible Multi-Tenant Workspace & Team Management Panel */}
+      {showWorkspaceManager && (
+        <div
+          style={{
+            backgroundColor: '#f8fafc',
+            border: '1px solid #cbd5e1',
+            borderRadius: '8px',
+            padding: '1.25rem',
+            marginBottom: '1.5rem',
+          }}
+        >
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem', flexWrap: 'wrap', gap: '0.5rem' }}>
+            <h3 style={{ margin: 0, fontSize: '1.1rem', fontWeight: 700, color: '#0f172a' }}>
+              Multi-Tenant Workspace & Team Management
+            </h3>
+            <span style={{ fontSize: '0.85rem', color: '#64748b' }}>
+              Active Workspace: <strong>{profile?.memberships.find(m => m.merchant_id === profile.active_merchant_id)?.merchant_name || profile?.active_merchant_id}</strong>
+            </span>
+          </div>
+
+          {managerNotice && (
+            <div
               style={{
-                padding: '0.4rem 0.8rem',
+                padding: '0.5rem 0.75rem',
                 borderRadius: '6px',
-                border: '1px solid #cbd5e1',
-                backgroundColor: '#ffffff',
-                fontWeight: 600,
-                fontSize: '0.9rem',
-                cursor: 'pointer',
+                marginBottom: '1rem',
+                fontSize: '0.85rem',
+                backgroundColor: managerNotice.type === 'success' ? '#f0fdf4' : '#fef2f2',
+                color: managerNotice.type === 'success' ? '#166534' : '#991b1b',
+                border: `1px solid ${managerNotice.type === 'success' ? '#bbf7d0' : '#fecaca'}`,
               }}
             >
-              {profile.memberships.map((m) => (
-                <option key={m.merchant_id} value={m.merchant_id}>
-                  {m.merchant_name} ({m.role})
-                </option>
-              ))}
-            </select>
+              {managerNotice.text}
+            </div>
+          )}
+
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: '1.5rem' }}>
+            {/* Left: Active Workspace Members & Invite Form */}
+            <div style={{ backgroundColor: '#ffffff', padding: '1rem', borderRadius: '6px', border: '1px solid #e2e8f0' }}>
+              <h4 style={{ margin: '0 0 0.75rem 0', fontSize: '0.95rem', fontWeight: 600, color: '#1e293b' }}>
+                Active Workspace Members
+              </h4>
+              {membersLoading ? (
+                <p style={{ fontSize: '0.85rem', color: '#64748b' }}>Loading members...</p>
+              ) : members.length === 0 ? (
+                <p style={{ fontSize: '0.85rem', color: '#64748b' }}>No members found.</p>
+              ) : (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', maxHeight: '180px', overflowY: 'auto', marginBottom: '1rem' }}>
+                  {members.map((m) => (
+                    <div
+                      key={m.id || m.user_id}
+                      style={{
+                        display: 'flex',
+                        justifyContent: 'space-between',
+                        alignItems: 'center',
+                        padding: '0.4rem 0.6rem',
+                        backgroundColor: '#f8fafc',
+                        borderRadius: '4px',
+                        fontSize: '0.85rem',
+                      }}
+                    >
+                      <div>
+                        <strong>{m.user_email || m.user_id}</strong>
+                        <span
+                          style={{
+                            marginLeft: '0.5rem',
+                            backgroundColor: '#e2e8f0',
+                            padding: '1px 6px',
+                            borderRadius: '4px',
+                            fontSize: '0.75rem',
+                          }}
+                        >
+                          {m.role}
+                        </span>
+                      </div>
+                      {m.role !== 'OWNER' && (
+                        <button
+                          onClick={() => handleRemoveMember(m.user_id)}
+                          style={{
+                            border: 'none',
+                            background: 'none',
+                            color: '#dc2626',
+                            cursor: 'pointer',
+                            fontSize: '0.75rem',
+                            fontWeight: 600,
+                          }}
+                        >
+                          Remove
+                        </button>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {/* Invite Member Sub-form */}
+              <form onSubmit={handleInviteMember} style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
+                <input
+                  type="email"
+                  placeholder="colleague@example.com"
+                  value={inviteEmail}
+                  onChange={(e) => setInviteEmail(e.target.value)}
+                  style={{
+                    flex: 1,
+                    minWidth: '150px',
+                    padding: '0.4rem 0.6rem',
+                    fontSize: '0.85rem',
+                    borderRadius: '4px',
+                    border: '1px solid #cbd5e1',
+                  }}
+                  required
+                />
+                <select
+                  value={inviteRole}
+                  onChange={(e) => setInviteRole(e.target.value)}
+                  style={{
+                    padding: '0.4rem 0.6rem',
+                    fontSize: '0.85rem',
+                    borderRadius: '4px',
+                    border: '1px solid #cbd5e1',
+                  }}
+                >
+                  <option value="VIEWER">VIEWER</option>
+                  <option value="MANAGER">MANAGER</option>
+                  <option value="ADMIN">ADMIN</option>
+                </select>
+                <button
+                  type="submit"
+                  style={{
+                    padding: '0.4rem 0.8rem',
+                    backgroundColor: '#0070ba',
+                    color: '#ffffff',
+                    border: 'none',
+                    borderRadius: '4px',
+                    fontSize: '0.85rem',
+                    fontWeight: 600,
+                    cursor: 'pointer',
+                  }}
+                >
+                  + Invite
+                </button>
+              </form>
+            </div>
+
+            {/* Right: Create New Merchant Workspace */}
+            <div style={{ backgroundColor: '#ffffff', padding: '1rem', borderRadius: '6px', border: '1px solid #e2e8f0' }}>
+              <h4 style={{ margin: '0 0 0.75rem 0', fontSize: '0.95rem', fontWeight: 600, color: '#1e293b' }}>
+                Create New Merchant Workspace
+              </h4>
+              <p style={{ margin: '0 0 0.75rem 0', fontSize: '0.85rem', color: '#64748b' }}>
+                Create an isolated tenant environment with its own catalog, webhooks, and team roles.
+              </p>
+              <form onSubmit={handleCreateWorkspace} style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+                <div>
+                  <label style={{ display: 'block', fontSize: '0.8rem', fontWeight: 600, color: '#475569', marginBottom: '0.2rem' }}>
+                    Workspace Name
+                  </label>
+                  <input
+                    type="text"
+                    placeholder="e.g. Acme EU Flagship"
+                    value={newWsName}
+                    onChange={(e) => setNewWsName(e.target.value)}
+                    style={{
+                      width: '100%',
+                      padding: '0.4rem 0.6rem',
+                      fontSize: '0.85rem',
+                      borderRadius: '4px',
+                      border: '1px solid #cbd5e1',
+                      boxSizing: 'border-box',
+                    }}
+                    required
+                  />
+                </div>
+                <div>
+                  <label style={{ display: 'block', fontSize: '0.8rem', fontWeight: 600, color: '#475569', marginBottom: '0.2rem' }}>
+                    Workspace Slug (lowercase-with-hyphens)
+                  </label>
+                  <input
+                    type="text"
+                    placeholder="e.g. acme-eu-flagship"
+                    value={newWsSlug}
+                    onChange={(e) => setNewWsSlug(e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, '-'))}
+                    style={{
+                      width: '100%',
+                      padding: '0.4rem 0.6rem',
+                      fontSize: '0.85rem',
+                      borderRadius: '4px',
+                      border: '1px solid #cbd5e1',
+                      boxSizing: 'border-box',
+                    }}
+                    required
+                  />
+                </div>
+                <button
+                  type="submit"
+                  style={{
+                    alignSelf: 'flex-start',
+                    padding: '0.45rem 1rem',
+                    backgroundColor: '#16a34a',
+                    color: '#ffffff',
+                    border: 'none',
+                    borderRadius: '4px',
+                    fontSize: '0.85rem',
+                    fontWeight: 600,
+                    cursor: 'pointer',
+                  }}
+                >
+                  🚀 Create Workspace
+                </button>
+              </form>
+            </div>
           </div>
-        )}
-      </div>
+        </div>
+      )}
 
       {loading && <p style={{ color: '#64748b' }}>Loading merchant analytics and AI insights...</p>}
       {error && <p style={{ color: '#ef4444' }}>Error: {error}</p>}

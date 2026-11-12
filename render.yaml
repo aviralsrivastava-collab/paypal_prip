@@ -1,4 +1,4 @@
-# PRIP — Render Blueprint Configuration (Free Tier Web Service)
+# PRIP — Render Blueprint Configuration (Multi-Service Architecture)
 # For complete instructions, see docs/PRIP_FREE_TIER_DEPLOYMENT_GUIDE.md
 version: "1"
 services:
@@ -44,3 +44,43 @@ services:
         value: https://www.googleapis.com/oauth2/v3/certs
       - key: ALLOWED_GOOGLE_EMAIL
         sync: false
+
+  - type: worker
+    name: prip-worker
+    env: python
+    region: oregon
+    plan: free
+    buildCommand: "pip install -r backend/requirements.txt"
+    startCommand: "python -m backend.worker"
+    autoDeploy: false
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.9
+      - key: APP_ENV
+        value: production
+      - key: DATABASE_URL
+        fromService:
+          type: web
+          name: prip-backend
+          envVarKey: DATABASE_URL
+      - key: PAYPAL_MODE
+        value: sandbox
+      - key: PAYPAL_ENVIRONMENT
+        value: sandbox
+      - key: PAYPAL_BASE_URL
+        value: https://api-m.sandbox.paypal.com
+      - key: PAYPAL_CLIENT_ID
+        fromService:
+          type: web
+          name: prip-backend
+          envVarKey: PAYPAL_CLIENT_ID
+      - key: PAYPAL_CLIENT_SECRET
+        fromService:
+          type: web
+          name: prip-backend
+          envVarKey: PAYPAL_CLIENT_SECRET
+      - key: PAYPAL_WEBHOOK_ID
+        fromService:
+          type: web
+          name: prip-backend
+          envVarKey: PAYPAL_WEBHOOK_ID
